@@ -1,57 +1,113 @@
 import { useMemo, useState } from "react";
-import { trpc } from "@/providers/trpc";
-import { StatusBadge } from "@/components/Stat";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { listContracts, createContract, updateContract, deleteContract } from "@/api/contracts";
+import { listBrands, listLandlords } from "@/api/directory";
+import { listStations } from "@/api/stations";
+import { Money, StatusBadge } from "@/components/Stat";
 import { Button } from "@/components/ui/button";
-import { inputCls } from "@/components/fields";
-import { ContractForm, type ContractRow } from "@/components/ContractForm";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Field, NumInput, TextInput, DateInput, SelectInput, inputCls } from "@/components/fields";
 import { exportXlsx } from "@/lib/export";
-import { fmtDate } from "@/lib/format";
-import { Download, Plus, Search, Pencil, Trash2, AlertTriangle } from "lucide-react";
+import { fmtMoney, fmtNum, fmtDate } from "@/lib/format";
+import { Download, Plus, Search, Pencil, Trash2, AlertTriangle, FileText, ArrowDownCircle, ArrowUpCircle } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Contracts() {
   const [keyword, setKeyword] = useState("");
   const [brandId, setBrandId] = useState("");
+  const [landlordId, setLandlordId] = useState("");
+  const [contractType, setContractType] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [formOpen, setFormOpen] = useState(false);
-  const [editing, setEditing] = useState<ContractRow | null>(null);
+  const [editing, setEditing] = useState<any>(null);
+  const [formType, setFormType] = useState("场地合同");
 
-  const brands = trpc.ledger.brands.useQuery();
-  const list = trpc.ledger.contracts.useQuery(
-    keyword || brandId ? { keyword: keyword || undefined, brandId: brandId ? Number(brandId) : undefined } : undefined,
-  );
-  const utils = trpc.useUtils();
-  const del = trpc.mut.deleteContract.useMutation({ onSuccess: () => { toast.success("已删除"); utils.invalidate(); } });
+  const queryClient = useQueryClient();
+  const brands = useQuery({ queryKey: ["brands"], queryFn: listBrands });
+  const landlords = useQuery({ queryKey: ["landlords"], queryFn: listLandlords });
+  const list = useQuery({
+    queryKey: ["contracts", keyword, brandId, landlordId, contractType],
+    queryFn: () => listContracts({
+      keyword: keyword || undefined,
+      brandId: brandId ? Number(brandId) : undefined,
+      landlordId: landlordId ? Number(landlordId) : undefined,
+      contractType: contractType || undefined,
+    }),
+  });
 
-  const rows = useMemo(() => (list.data ?? []).filter((c) => !statusFilter || c.status === statusFilter), [list.data, statusFilter]);
+  const del = useMutation({
+    mutationFn: deleteContract,
+    onSuccess: () => { toast.success("已删除"); queryClient.invalidateQueries({ queryKey: ["contracts"] }); },
+  });
+
+  const rows = useMemo(() => {
+    let data = list.data ?? [];
+    if (statusFilter) data = data.filter((c: any) => c.status === statusFilter);
+    return data;
+  }, [list.data, statusFilter]);
+
   const counts = useMemo(() => {
     const all = list.data ?? [];
     return {
       total: all.length,
-      normal: all.filter((c) => c.status === "正常").length,
-      expiring: all.filter((c) => c.status === "临期").length,
-      expired: all.filter((c) => c.status === "已到期").length,
+      normal: all.filter((c: any) => c.status === "正常").length,
+      expiring: all.filter((c: any) => c.status === "临期").length,
+      expired: all.filter((c: any) => c.status === "已到期").length,
     };
   }, [list.data]);
 
+  // 按站点分组，并分离场地合同和品牌方合同
+  const groupedByStation = useMemo(() => {
+    const groups = new Map<number, any>();
+    for (const r of rows) {
+      const sid = r.station_id || 0;
+      if (!groups.has(sid)) {
+        groups.set(sid, {
+          stationId: sid,
+          stationName: r.station_name,
+          landlordName: r.landlord_name,
+          costContracts: [],   // 场地合同
+          incomeContracts: [], // 品牌方合同
+        });
+      }
+      const group = groups.get(sid);
+      if (r.contract_type === "品牌方合同") {
+        group.incomeContracts.push(r);
+      } else {
+        group.costContracts.push(r);
+      }
+    }
+    return [...groups.values()];
+  }, [rows]);
+
   const doExport = () => {
     if (rows.length === 0) { toast.error("暂无数据可导出"); return; }
-    exportXlsx(`合同监控表_${new Date().toISOString().slice(0, 10)}`, [{
-      name: "合同监控",
-      rows: rows.map((c) => ({
-        品牌方: c.brandName ?? "", 付款主体: c.payEntity ?? "", 站点名称: c.stationName,
-        站点地址: c.address ?? "", 合作方: c.partner ?? "", 合同类型: c.contractType,
-        开始日期: fmtDate(c.startDate, ""), 结束日期: fmtDate(c.endDate, ""),
-        剩余天数: c.daysLeft ?? "", 状态: c.status, 备注: c.remark ?? "",
+    exportXlsx(`合同管理_${new Date().toISOString().slice(0, 10)}`, [{
+      name: "合同管理",
+      rows: rows.map((c: any) => ({
+        站点: c.station_name, 场地方: c.landlord_name ?? "", 品牌方: c.brand_name ?? "",
+        合同类型: c.contract_type, 电费单价: c.electricity_price ?? "",
+        租金金额: c.rent_amount ?? "", 月租金: c.monthly_rent ?? "",
+        付款方式: c.pay_method ?? "", 合作方: c.partner ?? "",
+        开始日期: fmtDate(c.start_date, ""), 结束日期: fmtDate(c.end_date, ""),
+        剩余天数: c.days_left ?? "", 状态: c.status, 备注: c.remark ?? "",
       })),
     }]);
     toast.success("已导出 Excel");
   };
 
+  const openCreate = (type: string) => {
+    setFormType(type);
+    setEditing(null);
+    setFormOpen(true);
+  };
+
   const th = "px-3 py-2.5 text-left text-xs font-medium text-slate-500 whitespace-nowrap";
+  const thR = "px-3 py-2.5 text-right text-xs font-medium text-slate-500 whitespace-nowrap";
 
   return (
     <div className="space-y-4">
+      {/* 统计卡片 */}
       <div className="grid grid-cols-4 gap-4">
         {[
           { label: "合同总数", value: counts.total, cls: "text-slate-800", filter: "" },
@@ -74,61 +130,300 @@ export default function Contracts() {
         </div>
       )}
 
+      {/* 筛选栏 */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
-          <input className={`${inputCls} w-56 pl-8`} placeholder="搜索站点 / 合作方…" value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+          <input className={`${inputCls} w-48 pl-8`} placeholder="搜索站点 / 合作方…" value={keyword} onChange={(e) => setKeyword(e.target.value)} />
         </div>
+        <select className={`${inputCls} w-40`} value={landlordId} onChange={(e) => setLandlordId(e.target.value)}>
+          <option value="">全部场地方</option>
+          {(landlords.data ?? []).map((l: any) => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
+        </select>
         <select className={`${inputCls} w-40`} value={brandId} onChange={(e) => setBrandId(e.target.value)}>
           <option value="">全部品牌方</option>
-          {(brands.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+          {(brands.data ?? []).map((b: any) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
         </select>
         <div className="ml-auto flex gap-2">
           <Button variant="outline" onClick={doExport}><Download className="mr-1.5 h-4 w-4" />导出表格</Button>
-          <Button className="bg-emerald-600 hover:bg-emerald-700" onClick={() => { setEditing(null); setFormOpen(true); }}>
-            <Plus className="mr-1.5 h-4 w-4" />新增合同
+          <Button variant="outline" className="text-rose-600" onClick={() => openCreate("场地合同")}>
+            <Plus className="mr-1 h-4 w-4" />场地合同
+          </Button>
+          <Button className="bg-emerald-600 hover:bg-emerald-700" onClick={() => openCreate("品牌方合同")}>
+            <Plus className="mr-1 h-4 w-4" />品牌方合同
           </Button>
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border bg-white shadow-sm">
-        <table className="w-full min-w-[1100px] text-xs">
-          <thead><tr className="border-b bg-slate-50">
-            <th className={th}>品牌方</th><th className={th}>站点名称</th><th className={th}>站点地址</th>
-            <th className={th}>付款主体</th><th className={th}>合作方</th><th className={th}>类型</th>
-            <th className={th}>开始日期</th><th className={th}>结束日期</th><th className="px-3 py-2.5 text-right text-xs font-medium text-slate-500">剩余天数</th>
-            <th className={th}>状态</th><th className={th}>备注</th><th className={`${th} text-center`}>操作</th>
-          </tr></thead>
-          <tbody>
-            {rows.map((c) => (
-              <tr key={c.id} className={`border-b last:border-0 hover:bg-slate-50/60 ${c.status === "已到期" ? "bg-rose-50/30" : c.status === "临期" ? "bg-amber-50/30" : ""}`}>
-                <td className="px-3 py-2.5">{c.brandName ?? "-"}</td>
-                <td className="max-w-[200px] truncate px-3 py-2.5 font-medium" title={c.stationName}>{c.stationName}</td>
-                <td className="max-w-[220px] truncate px-3 py-2.5 text-slate-600" title={c.address ?? ""}>{c.address ?? "-"}</td>
-                <td className="px-3 py-2.5 text-slate-600">{c.payEntity ?? "-"}</td>
-                <td className="px-3 py-2.5 text-slate-600">{c.partner ?? "-"}</td>
-                <td className="px-3 py-2.5 text-slate-600">{c.contractType}</td>
-                <td className="whitespace-nowrap px-3 py-2.5">{fmtDate(c.startDate)}</td>
-                <td className="whitespace-nowrap px-3 py-2.5">{fmtDate(c.endDate)}</td>
-                <td className={`px-3 py-2.5 text-right font-semibold tabular-nums ${c.status === "已到期" ? "text-rose-600" : c.status === "临期" ? "text-amber-600" : "text-slate-600"}`}>
-                  {c.daysLeft ?? "-"}
-                </td>
-                <td className="px-3 py-2.5"><StatusBadge status={c.status} /></td>
-                <td className="max-w-[140px] truncate px-3 py-2.5 text-slate-500" title={c.remark ?? ""}>{c.remark ?? "-"}</td>
-                <td className="px-3 py-2.5">
-                  <div className="flex justify-center gap-0.5">
-                    <button className="rounded p-1 text-slate-400 hover:text-emerald-600" onClick={() => { setEditing(c as never); setFormOpen(true); }}><Pencil className="h-3.5 w-3.5" /></button>
-                    <button className="rounded p-1 text-slate-400 hover:text-rose-500" onClick={() => window.confirm("删除该合同？") && del.mutate({ id: c.id })}><Trash2 className="h-3.5 w-3.5" /></button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && <tr><td colSpan={12} className="py-16 text-center text-slate-400">{list.isLoading ? "加载中…" : "暂无合同"}</td></tr>}
-          </tbody>
-        </table>
+      {/* 按站点分组展示 */}
+      <div className="space-y-6">
+        {groupedByStation.map((group: any) => {
+          const totalCost = group.costContracts.reduce((t: number, c: any) => t + (c.monthly_rent ? Number(c.monthly_rent) : 0), 0);
+          const totalIncome = group.incomeContracts.reduce((t: number, c: any) => t + (c.monthly_rent ? Number(c.monthly_rent) : 0), 0);
+
+          return (
+            <div key={group.stationId} className="rounded-xl border bg-white shadow-sm">
+              {/* 站点头部 */}
+              <div className="border-b px-5 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-emerald-600" />
+                  <span className="text-sm font-semibold text-slate-700">{group.stationName || "未关联站点"}</span>
+                  {group.landlordName && <span className="text-xs text-slate-400">场地方：{group.landlordName}</span>}
+                </div>
+                <div className="flex items-center gap-4 text-xs">
+                  <span className="text-rose-600">月成本 <b className="tabular-nums">{fmtMoney(totalCost)}</b></span>
+                  <span className="text-emerald-600">月收入 <b className="tabular-nums">{fmtMoney(totalIncome)}</b></span>
+                  <span className="text-slate-600">月利润 <b className="tabular-nums">{fmtMoney(totalIncome - totalCost)}</b></span>
+                </div>
+              </div>
+
+              {/* 成本合同（场地合同） */}
+              <div className="border-b">
+                <div className="flex items-center gap-2 bg-rose-50/50 px-5 py-2">
+                  <ArrowDownCircle className="h-4 w-4 text-rose-500" />
+                  <span className="text-xs font-semibold text-rose-600">场地合同（{group.costContracts.length} 份）</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead><tr className="border-b bg-slate-50">
+                      <th className={th}>合同类型</th>
+                      <th className={th}>场地方</th>
+                      <th className={thR}>电费单价</th>
+                      <th className={thR}>年租金</th>
+                      <th className={thR}>月租金</th>
+                      <th className={th}>付款方式</th>
+                      <th className={th}>合同期限</th>
+                      <th className={thR}>剩余天数</th>
+                      <th className={th}>状态</th>
+                      <th className={th}>备注</th>
+                      <th className={`${th} text-center`}>操作</th>
+                    </tr></thead>
+                    <tbody>
+                      {group.costContracts.map((c: any) => (
+                        <tr key={c.id} className={`border-b last:border-0 hover:bg-slate-50/60 ${c.status === "已到期" ? "bg-rose-50/30" : c.status === "临期" ? "bg-amber-50/30" : ""}`}>
+                          <td className="px-3 py-2.5 font-medium">{c.contract_type}</td>
+                          <td className="px-3 py-2.5 text-slate-600">{c.landlord_name ?? "-"}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">{c.electricity_price ? fmtNum(c.electricity_price) : "-"}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">{c.rent_amount ? fmtMoney(c.rent_amount) : "-"}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">{c.monthly_rent ? fmtMoney(c.monthly_rent) : "-"}</td>
+                          <td className="px-3 py-2.5">{c.pay_method ?? "-"}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5">{fmtDate(c.start_date)} ~ {fmtDate(c.end_date)}</td>
+                          <td className={`px-3 py-2.5 text-right font-semibold tabular-nums ${c.status === "已到期" ? "text-rose-600" : c.status === "临期" ? "text-amber-600" : "text-slate-600"}`}>
+                            {c.days_left ?? "-"}
+                          </td>
+                          <td className="px-3 py-2.5"><StatusBadge status={c.status} /></td>
+                          <td className="max-w-[120px] truncate px-3 py-2.5 text-slate-500" title={c.remark ?? ""}>{c.remark ?? "-"}</td>
+                          <td className="px-3 py-2.5">
+                            <div className="flex justify-center gap-0.5">
+                              <button className="rounded p-1 text-slate-400 hover:text-emerald-600" onClick={() => { setEditing(c); setFormType(c.contract_type); setFormOpen(true); }}><Pencil className="h-3.5 w-3.5" /></button>
+                              <button className="rounded p-1 text-slate-400 hover:text-rose-500" onClick={() => window.confirm("删除？") && del.mutate(c.id)}><Trash2 className="h-3.5 w-3.5" /></button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      {group.costContracts.length === 0 && (
+                        <tr><td colSpan={11} className="py-4 text-center text-slate-400">暂无成本合同</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* 收入合同（品牌方合同） */}
+              <div>
+                <div className="flex items-center gap-2 bg-emerald-50/50 px-5 py-2">
+                  <ArrowUpCircle className="h-4 w-4 text-emerald-500" />
+                  <span className="text-xs font-semibold text-emerald-600">收入合同（{group.incomeContracts.length} 份）</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead><tr className="border-b bg-slate-50">
+                      <th className={th}>品牌方</th>
+                      <th className={thR}>单柜月租</th>
+                      <th className={thR}>计费柜数</th>
+                      <th className={thR}>月租金</th>
+                      <th className={thR}>电费单价</th>
+                      <th className={th}>付款方式</th>
+                      <th className={th}>合同期限</th>
+                      <th className={thR}>剩余天数</th>
+                      <th className={th}>状态</th>
+                      <th className={th}>备注</th>
+                      <th className={`${th} text-center`}>操作</th>
+                    </tr></thead>
+                    <tbody>
+                      {group.incomeContracts.map((c: any) => (
+                        <tr key={c.id} className={`border-b last:border-0 hover:bg-slate-50/60 ${c.status === "已到期" ? "bg-rose-50/30" : c.status === "临期" ? "bg-amber-50/30" : ""}`}>
+                          <td className="px-3 py-2.5 font-medium">{c.brand_name ?? "-"}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">{c.unit_monthly_rent ? fmtMoney(c.unit_monthly_rent) : "-"}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">{c.cabinets_count ? fmtNum(c.cabinets_count) : "-"}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">{c.monthly_rent ? fmtMoney(c.monthly_rent) : "-"}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">{c.electricity_price ? fmtNum(c.electricity_price) : "-"}</td>
+                          <td className="px-3 py-2.5">{c.pay_method ?? "-"}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5">{fmtDate(c.start_date)} ~ {fmtDate(c.end_date)}</td>
+                          <td className={`px-3 py-2.5 text-right font-semibold tabular-nums ${c.status === "已到期" ? "text-rose-600" : c.status === "临期" ? "text-amber-600" : "text-slate-600"}`}>
+                            {c.days_left ?? "-"}
+                          </td>
+                          <td className="px-3 py-2.5"><StatusBadge status={c.status} /></td>
+                          <td className="max-w-[120px] truncate px-3 py-2.5 text-slate-500" title={c.remark ?? ""}>{c.remark ?? "-"}</td>
+                          <td className="px-3 py-2.5">
+                            <div className="flex justify-center gap-0.5">
+                              <button className="rounded p-1 text-slate-400 hover:text-emerald-600" onClick={() => { setEditing(c); setFormType("品牌方合同"); setFormOpen(true); }}><Pencil className="h-3.5 w-3.5" /></button>
+                              <button className="rounded p-1 text-slate-400 hover:text-rose-500" onClick={() => window.confirm("删除？") && del.mutate(c.id)}><Trash2 className="h-3.5 w-3.5" /></button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      {group.incomeContracts.length === 0 && (
+                        <tr><td colSpan={10} className="py-4 text-center text-slate-400">暂无收入合同</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        {groupedByStation.length === 0 && (
+          <div className="rounded-xl border border-dashed py-16 text-center text-slate-400">
+            {list.isLoading ? "加载中…" : "暂无合同数据"}
+          </div>
+        )}
       </div>
 
-      <ContractForm open={formOpen} onClose={() => { setFormOpen(false); setEditing(null); }} record={editing ?? undefined} />
+      <ContractForm open={formOpen} onClose={() => { setFormOpen(false); setEditing(null); }} record={editing} defaultType={formType} />
     </div>
+  );
+}
+
+// ─── 合同表单 ───
+function ContractForm({ open, onClose, record, defaultType }: { open: boolean; onClose: () => void; record?: any; defaultType?: string }) {
+  const blank = {
+    stationId: "", stationName: "", landlordId: "", brandId: "", contractType: defaultType || "场地合同",
+    electricityPrice: "", rentAmount: "", cabinetsCount: "", unitMonthlyRent: "", monthlyRent: "",
+    payMethod: "", address: "", partner: "", payEntity: "",
+    startDate: "", endDate: "", payStatus: "未付款", remark: "",
+  };
+  const [f, setF] = useState(blank);
+  const queryClient = useQueryClient();
+  const stations = useQuery({ queryKey: ["stations"], queryFn: () => listStations(), enabled: open });
+  const brands = useQuery({ queryKey: ["brands"], queryFn: listBrands, enabled: open });
+  const landlords = useQuery({ queryKey: ["landlords"], queryFn: listLandlords, enabled: open });
+
+  useState(() => {
+    if (record) {
+      setF({
+        stationId: record.station_id ? String(record.station_id) : "", stationName: record.station_name ?? "",
+        landlordId: record.landlord_id ? String(record.landlord_id) : "", brandId: record.brand_id ? String(record.brand_id) : "",
+        contractType: record.contract_type ?? "场地合同",
+        electricityPrice: record.electricity_price ?? "", rentAmount: record.rent_amount ?? "",
+        cabinetsCount: record.cabinets_count ?? "", unitMonthlyRent: record.unit_monthly_rent ?? "",
+        monthlyRent: record.monthly_rent ?? "", payMethod: record.pay_method ?? "",
+        address: record.address ?? "", partner: record.partner ?? "", payEntity: record.pay_entity ?? "",
+        startDate: record.start_date ?? "", endDate: record.end_date ?? "",
+        payStatus: record.pay_status ?? "未付款", remark: record.remark ?? "",
+      });
+    } else {
+      setF({ ...blank, contractType: defaultType || "场地合同" });
+    }
+  });
+
+  const set = (k: string) => (v: string) => setF((p) => ({ ...p, [k]: v }));
+
+  const save = useMutation({
+    mutationFn: (data: any) => record ? updateContract(record.id, data) : createContract(data),
+    onSuccess: () => { toast.success("合同已保存"); queryClient.invalidateQueries(); onClose(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const submit = () => {
+    if (!f.stationName.trim() && f.landlordId) {
+      const l = (landlords.data ?? []).find((l: any) => String(l.id) === f.landlordId);
+      if (l) setF((p) => ({ ...p, stationName: l.name }));
+    }
+    if (!f.stationName.trim()) { toast.error("请选择场地方"); return; }
+    save.mutate({
+      stationId: f.stationId ? Number(f.stationId) : null,
+      stationName: f.stationName.trim(),
+      landlordId: f.landlordId ? Number(f.landlordId) : null,
+      brandId: f.brandId ? Number(f.brandId) : null,
+      contractType: f.contractType,
+      electricityPrice: f.electricityPrice ? Number(f.electricityPrice) : null,
+      rentAmount: f.rentAmount ? Number(f.rentAmount) : null,
+      cabinetsCount: f.cabinetsCount ? Number(f.cabinetsCount) : null,
+      unitMonthlyRent: f.unitMonthlyRent ? Number(f.unitMonthlyRent) : null,
+      monthlyRent: f.monthlyRent ? Number(f.monthlyRent) : null,
+      payMethod: f.payMethod || null,
+      address: f.address || null,
+      partner: f.partner || null,
+      payEntity: f.payEntity || null,
+      startDate: f.startDate || null,
+      endDate: f.endDate || null,
+      payStatus: f.payStatus,
+      remark: f.remark || null,
+    });
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader><DialogTitle>{record ? "编辑合同" : "新增合同"}</DialogTitle></DialogHeader>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="合同类型 *">
+            <SelectInput value={f.contractType} onChange={set("contractType")}
+              options={[{ value: "场地合同", label: "场地合同" }, { value: "品牌方合同", label: "品牌方合同" }]} />
+          </Field>
+
+          {f.contractType === "场地合同" && (
+            <>
+              <Field label="场地方 *">
+                <SelectInput value={f.landlordId} onChange={(v) => {
+                  set("landlordId")(v);
+                  const l = (landlords.data ?? []).find((l: any) => String(l.id) === v);
+                  if (l) set("stationName")(l.name);
+                }}
+                  options={[{ value: "", label: "请选择场地方" }, ...(landlords.data ?? []).map((l: any) => ({ value: String(l.id), label: l.name }))]} />
+              </Field>
+              <Field label="年租金（元）"><NumInput value={f.rentAmount} onChange={set("rentAmount")} /></Field>
+              <Field label="月租金（元）"><NumInput value={f.monthlyRent} onChange={set("monthlyRent")} /></Field>
+              <Field label="电费单价（元/度）"><NumInput value={f.electricityPrice} onChange={set("electricityPrice")} placeholder="0.65" /></Field>
+              <Field label="付款方式">
+                <SelectInput value={f.payMethod} onChange={set("payMethod")}
+                  options={[{ value: "", label: "请选择" }, { value: "月付", label: "月付" }, { value: "季付", label: "季付" }, { value: "半年付", label: "半年付" }, { value: "年付", label: "年付" }]} />
+              </Field>
+            </>
+          )}
+
+          {f.contractType === "品牌方合同" && (
+            <>
+              <Field label="品牌方">
+                <SelectInput value={f.brandId} onChange={set("brandId")}
+                  options={[{ value: "", label: "请选择品牌方" }, ...(brands.data ?? []).map((b: any) => ({ value: String(b.id), label: b.name }))]} />
+              </Field>
+              <Field label="单柜月租金（元）"><NumInput value={f.unitMonthlyRent} onChange={set("unitMonthlyRent")} /></Field>
+              <Field label="计费柜数"><NumInput value={f.cabinetsCount} onChange={set("cabinetsCount")} /></Field>
+              <Field label="月租金（元）"><NumInput value={f.monthlyRent} onChange={set("monthlyRent")} /></Field>
+              <Field label="电费单价（元/度）"><NumInput value={f.electricityPrice} onChange={set("electricityPrice")} placeholder="1.20" /></Field>
+              <Field label="付款方式">
+                <SelectInput value={f.payMethod} onChange={set("payMethod")}
+                  options={[{ value: "", label: "请选择" }, { value: "月付", label: "月付" }, { value: "季付", label: "季付" }, { value: "半年付", label: "半年付" }, { value: "年付", label: "年付" }]} />
+              </Field>
+            </>
+          )}
+
+          <Field label="开始日期"><DateInput value={f.startDate} onChange={set("startDate")} /></Field>
+          <Field label="结束日期"><DateInput value={f.endDate} onChange={set("endDate")} /></Field>
+          <Field label="付款状态">
+            <SelectInput value={f.payStatus} onChange={set("payStatus")}
+              options={[{ value: "未付款", label: "未付款" }, { value: "已付款", label: "已付款" }]} />
+          </Field>
+          <Field label="合作方"><TextInput value={f.partner} onChange={set("partner")} /></Field>
+          <Field label="备注"><TextInput value={f.remark} onChange={set("remark")} /></Field>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button className="bg-emerald-600 hover:bg-emerald-700" disabled={save.isPending} onClick={submit}>保存</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { trpc } from "@/providers/trpc";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { createElectricity, updateElectricity } from "@/api/electricity";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Field, NumInput, TextInput, DateInput, SelectInput } from "./fields";
@@ -7,13 +8,13 @@ import { numOrNull, strOrNull, fmtMoney } from "@/lib/format";
 import { toast } from "sonner";
 
 type ElecRecord = {
-  id: number; stationId: number; period: string;
-  payStartDate: string | null; payStartReading: string | null; payEndDate: string | null; payEndReading: string | null;
-  payKwh: string | null; payUnitPrice: string | null; payAmount: string | null; payStatus: "未付款" | "已付款";
-  collectStartDate: string | null; collectStartReading: string | null; collectEndDate: string | null; collectEndReading: string | null;
-  collectKwh: string | null; collectUnitPrice: string | null; collectAmount: string | null;
-  taxRate: string | null; collectNet: string | null; collectStatus: "未到账" | "已到账";
-  opExpense: string | null; companyShare: string | null; remark: string | null;
+  id: number; station_id: number; period: string;
+  pay_start_date: string | null; pay_start_reading: string | null; pay_end_date: string | null; pay_end_reading: string | null;
+  pay_kwh: string | null; pay_unit_price: string | null; pay_amount: string | null; pay_status: string;
+  collect_start_date: string | null; collect_start_reading: string | null; collect_end_date: string | null; collect_end_reading: string | null;
+  collect_kwh: string | null; collect_unit_price: string | null; collect_amount: string | null;
+  tax_rate: string | null; collect_net: string | null; collect_status: string;
+  remark: string | null;
 };
 
 const blank = {
@@ -22,7 +23,7 @@ const blank = {
   payKwh: "", payUnitPrice: "", payAmount: "", payStatus: "未付款",
   collectStartDate: "", collectStartReading: "", collectEndDate: "", collectEndReading: "",
   collectKwh: "", collectUnitPrice: "", collectAmount: "", taxRate: "0.01",
-  collectNet: "", collectStatus: "未到账", opExpense: "", companyShare: "", remark: "",
+  collectNet: "", collectStatus: "未到账", remark: "",
 };
 
 export function ElecForm(props: {
@@ -33,23 +34,24 @@ export function ElecForm(props: {
   record?: ElecRecord | null;
 }) {
   const [f, setF] = useState(blank);
-  const utils = trpc.useUtils();
+  const queryClient = useQueryClient();
+
   useEffect(() => {
     if (!props.open) return;
     if (props.record) {
       const r = props.record;
       setF({
         period: r.period,
-        payStartDate: r.payStartDate ?? "", payStartReading: r.payStartReading ?? "",
-        payEndDate: r.payEndDate ?? "", payEndReading: r.payEndReading ?? "",
-        payKwh: r.payKwh ?? "", payUnitPrice: r.payUnitPrice ?? "", payAmount: r.payAmount ?? "",
-        payStatus: r.payStatus,
-        collectStartDate: r.collectStartDate ?? "", collectStartReading: r.collectStartReading ?? "",
-        collectEndDate: r.collectEndDate ?? "", collectEndReading: r.collectEndReading ?? "",
-        collectKwh: r.collectKwh ?? "", collectUnitPrice: r.collectUnitPrice ?? "",
-        collectAmount: r.collectAmount ?? "", taxRate: r.taxRate ?? "0.01",
-        collectNet: r.collectNet ?? "", collectStatus: r.collectStatus,
-        opExpense: r.opExpense ?? "", companyShare: r.companyShare ?? "", remark: r.remark ?? "",
+        payStartDate: r.pay_start_date ?? "", payStartReading: r.pay_start_reading ?? "",
+        payEndDate: r.pay_end_date ?? "", payEndReading: r.pay_end_reading ?? "",
+        payKwh: r.pay_kwh ?? "", payUnitPrice: r.pay_unit_price ?? "", payAmount: r.pay_amount ?? "",
+        payStatus: r.pay_status ?? "未付款",
+        collectStartDate: r.collect_start_date ?? "", collectStartReading: r.collect_start_reading ?? "",
+        collectEndDate: r.collect_end_date ?? "", collectEndReading: r.collect_end_reading ?? "",
+        collectKwh: r.collect_kwh ?? "", collectUnitPrice: r.collect_unit_price ?? "",
+        collectAmount: r.collect_amount ?? "", taxRate: r.tax_rate ?? "0.01",
+        collectNet: r.collect_net ?? "", collectStatus: r.collect_status ?? "未到账",
+        remark: r.remark ?? "",
       });
     } else setF(blank);
   }, [props.open, props.record]);
@@ -67,13 +69,15 @@ export function ElecForm(props: {
   const collectNet = numOrNull(f.collectNet) ?? (collectAmount !== null && taxRate !== null ? Math.round((collectAmount / (1 + taxRate)) * 100) / 100 : null);
   const profit = collectNet !== null || payAmount !== null ? Math.round(((collectNet ?? 0) - (payAmount ?? 0)) * 100) / 100 : null;
 
-  const save = trpc.mut.createElectricity.useMutation({
-    onSuccess: () => { toast.success("电费月结已保存"); utils.invalidate(); props.onClose(); },
-    onError: (e) => toast.error(e.message),
+  const onSuccess = () => { toast.success("电费月结已保存"); queryClient.invalidateQueries(); props.onClose(); };
+
+  const save = useMutation({
+    mutationFn: createElectricity,
+    onSuccess, onError: (e: any) => toast.error(e.message),
   });
-  const update = trpc.mut.updateElectricity.useMutation({
-    onSuccess: () => { toast.success("电费月结已更新"); utils.invalidate(); props.onClose(); },
-    onError: (e) => toast.error(e.message),
+  const update = useMutation({
+    mutationFn: (data: any) => updateElectricity(data.id, data),
+    onSuccess, onError: (e: any) => toast.error(e.message),
   });
 
   const submit = () => {
@@ -81,12 +85,12 @@ export function ElecForm(props: {
       stationId: props.stationId, period: f.period,
       payStartDate: strOrNull(f.payStartDate), payStartReading: numOrNull(f.payStartReading),
       payEndDate: strOrNull(f.payEndDate), payEndReading: numOrNull(f.payEndReading),
-      payKwh, payUnitPrice, payAmount, payStatus: f.payStatus as "未付款" | "已付款",
+      payKwh, payUnitPrice, payAmount, payStatus: f.payStatus,
       collectStartDate: strOrNull(f.collectStartDate), collectStartReading: numOrNull(f.collectStartReading),
       collectEndDate: strOrNull(f.collectEndDate), collectEndReading: numOrNull(f.collectEndReading),
       collectKwh, collectUnitPrice, collectAmount, taxRate, collectNet,
-      collectStatus: f.collectStatus as "未到账" | "已到账",
-      opExpense: numOrNull(f.opExpense), companyShare: numOrNull(f.companyShare), remark: strOrNull(f.remark),
+      collectStatus: f.collectStatus,
+      remark: strOrNull(f.remark),
     };
     if (props.record) update.mutate({ ...payload, id: props.record.id });
     else save.mutate(payload);
@@ -135,8 +139,6 @@ export function ElecForm(props: {
           </div>
 
           <div className="grid grid-cols-4 gap-3">
-            <Field label="运营费用（元）"><NumInput value={f.opExpense} onChange={set("opExpense")} /></Field>
-            <Field label="公司占股（0~1）"><NumInput value={f.companyShare} onChange={set("companyShare")} placeholder="1" /></Field>
             <Field label="备注" span><TextInput value={f.remark} onChange={set("remark")} /></Field>
           </div>
 
