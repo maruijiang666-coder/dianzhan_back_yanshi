@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .config import PORT
 from .infra.database import init_database
-from .api import directory, stations, meters, cabinets, electricity, rent, dividends, approvals, contracts, overview
+from .api import directory, stations, meters, cabinets, electricity, rent, dividends, approvals, contracts, overview, meter_energy
 from .jobs.scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 from .jobs.sync_meters import full_sync
 
@@ -38,6 +38,7 @@ app.include_router(dividends.router)
 app.include_router(approvals.router)
 app.include_router(contracts.router)
 app.include_router(overview.router)
+app.include_router(meter_energy.router)
 
 
 @app.get("/api/health")
@@ -56,31 +57,41 @@ async def sync_trigger(data: dict):
 
     type 可选值:
     - devices: 同步设备列表
+    - collectors: 同步采集器
     - status: 同步实时状态
-    - monthly-kwh: 同步月度用电量（每月限额10次，需手动触发）
+    - hourly: 同步小时用电量
+    - daily: 同步日用电量
+    - monthly: 同步月用电量
+    - yearly: 同步年用电量
     - warnings: 同步报警信息
-    - all: 同步全部（不含月度用电量）
+    - full: 全量同步
     """
-    sync_type = data.get("type", "all")
-    from .jobs.sync_meters import sync_devices, sync_status, sync_monthly_kwh, sync_warnings
+    sync_type = data.get("type", "full")
+    from .jobs.sync_meters import (
+        sync_devices, sync_collectors, sync_status,
+        sync_hourly_data, sync_daily_data, sync_monthly_data, sync_yearly_data,
+        sync_warnings, full_sync,
+    )
 
-    if sync_type == "devices":
-        await sync_devices()
-        return {"message": "同步成功", "type": sync_type}
-    elif sync_type == "status":
-        await sync_status()
-        return {"message": "同步成功", "type": sync_type}
-    elif sync_type == "monthly-kwh":
-        start_month = data.get("startMonth")
-        end_month = data.get("endMonth")
-        result = await sync_monthly_kwh(start_month, end_month)
-        return result
-    elif sync_type == "warnings":
-        await sync_warnings()
-        return {"message": "同步成功", "type": sync_type}
+    sync_map = {
+        "devices": sync_devices,
+        "collectors": sync_collectors,
+        "status": sync_status,
+        "hourly": sync_hourly_data,
+        "daily": sync_daily_data,
+        "monthly": sync_monthly_data,
+        "yearly": sync_yearly_data,
+        "warnings": sync_warnings,
+        "full": full_sync,
+    }
+
+    fn = sync_map.get(sync_type)
+    if fn:
+        result = await fn()
+        return {"message": "同步成功", "type": sync_type, "result": result}
     else:
         await full_sync()
-        return {"message": "同步成功（不含月度用电量）", "type": sync_type}
+        return {"message": "全量同步成功", "type": "full"}
 
 
 @app.get("/api/sync/monthly-kwh/status")

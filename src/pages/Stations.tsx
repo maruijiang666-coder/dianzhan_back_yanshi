@@ -1,85 +1,273 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getStationBoard } from "@/api/overview";
+import { getStationMeterView } from "@/api/stations";
 import { listBrands } from "@/api/directory";
 import { Money, StatusBadge } from "@/components/Stat";
 import { Button } from "@/components/ui/button";
 import { inputCls } from "@/components/fields";
 import { StationForm } from "@/components/StationForm";
-import { StationDrawer } from "@/components/StationDrawer";
 import { MonthPicker } from "@/components/MonthPicker";
 import { exportXlsx } from "@/lib/export";
-import { fmtMoney, fmtNum, fmtPct } from "@/lib/format";
-import { Download, Plus, Search, Eye, Pencil, ChevronDown, ChevronRight, MapPin, Gauge } from "lucide-react";
+import { fmtMoney, fmtNum, fmtPct, fmtDate } from "@/lib/format";
+import { Download, Plus, Search, ChevronDown, ChevronRight, MapPin, Gauge, ArrowLeft, Zap, Battery, Receipt, TrendingUp, Home } from "lucide-react";
 import { toast } from "sonner";
 
+// ─── 信息行 ───
+function InfoRow({ label, value }: { label: string; value: any }) {
+  return (
+    <div className="flex items-center gap-1">
+      <span className="shrink-0 text-slate-400">{label}：</span>
+      <span className="font-medium text-slate-700">{value ?? "-"}</span>
+    </div>
+  );
+}
+
+// ─── 区块卡片 ───
+function SectionCard({ icon: Icon, title, color, children }: { icon: any; title: string; color: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-slate-100 bg-white">
+      <div className={`flex items-center gap-1.5 border-b px-3 py-1.5 ${color}`}>
+        <Icon className="h-3.5 w-3.5" />
+        <span className="text-xs font-semibold">{title}</span>
+      </div>
+      <div className="px-3 py-2">{children}</div>
+    </div>
+  );
+}
+
+// ─── 站点电表详情 ───
+function StationMeterDetail({ stationId, period, onBack }: { stationId: number; period: string; onBack: () => void }) {
+  const { data: mv, isLoading } = useQuery({
+    queryKey: ["stationMeterView", stationId, period],
+    queryFn: () => getStationMeterView(stationId, period),
+  });
+
+  if (isLoading) return <div className="py-10 text-center text-slate-400">加载中…</div>;
+  if (!mv) return <div className="py-10 text-center text-slate-400">加载失败</div>;
+
+  return (
+    <div className="space-y-3">
+      {/* 返回按钮 + 站点名 */}
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="flex items-center gap-1 text-xs text-slate-500 hover:text-emerald-600 transition-colors">
+          <ArrowLeft className="h-3.5 w-3.5" />
+          返回站点列表
+        </button>
+        <span className="text-sm font-semibold text-slate-800">{mv.stationName}</span>
+        <span className="text-xs text-slate-400">· {period}</span>
+      </div>
+
+      {mv.brandGroups && mv.brandGroups.length === 0 && (
+        <div className="rounded-lg border border-dashed py-8 text-center text-sm text-slate-400">
+          暂无电表数据，请先在「电表管理」中添加电表
+        </div>
+      )}
+
+      {mv.brandGroups && mv.brandGroups.map((group: any) => (
+        <div key={group.brandName} className="space-y-2.5">
+          {/* 品牌分隔 */}
+          <div className="flex items-center gap-2">
+            <div className="h-px flex-1 bg-slate-200" />
+            <span className="shrink-0 text-xs font-bold text-slate-500 bg-slate-50 px-3 py-1 rounded-full border">
+              {group.brandName}
+            </span>
+            <div className="h-px flex-1 bg-slate-200" />
+          </div>
+
+          {group.meters.map((meter: any) => (
+            <div key={meter.meterId} className="rounded-xl border border-slate-200 bg-slate-50/50 overflow-hidden">
+              {/* 电表标题 */}
+              <div className="flex items-center gap-2 bg-white border-b px-4 py-2">
+                <Zap className="h-4 w-4 text-amber-500" />
+                <span className="text-sm font-semibold text-slate-800">
+                  {meter.meterNo || meter.meterName || `电表#${meter.meterId}`}
+                </span>
+                {meter.meterName && meter.meterNo && (
+                  <span className="text-xs text-slate-400">({meter.meterName})</span>
+                )}
+              </div>
+
+              <div className="p-3 space-y-2">
+                {/* 1. 站点配置 */}
+                <SectionCard icon={Battery} title="站点配置" color="text-violet-600 bg-violet-50 border-violet-100">
+                  <div className="grid grid-cols-3 gap-x-6 gap-y-1 text-xs">
+                    <InfoRow label="电表品牌" value={meter.brandName} />
+                    <InfoRow label="柜子数量" value={`${meter.cabinetCount} 个`} />
+                    <InfoRow label="柜子编号" value={meter.cabinetNos} />
+                  </div>
+                </SectionCard>
+
+                {/* 2. 电费付款情况 */}
+                <SectionCard icon={Zap} title="电费付款情况" color="text-amber-600 bg-amber-50 border-amber-100">
+                  <div className="grid grid-cols-4 gap-x-6 gap-y-1.5 text-xs">
+                    <InfoRow label="电表编号" value={meter.meterNo} />
+                    <InfoRow label="上月抄表度数" value={meter.prevEndReading != null ? fmtNum(meter.prevEndReading) : "-"} />
+                    <InfoRow label="本月抄表度数" value={meter.endReading != null ? fmtNum(meter.endReading) : "-"} />
+                    <InfoRow label="付款度数" value={meter.payKwh != null ? fmtNum(meter.payKwh) : "-"} />
+                    <InfoRow label="付款单价" value={meter.payUnitPrice != null ? `${fmtNum(meter.payUnitPrice)} 元/度` : "-"} />
+                    <InfoRow label="付款金额" value={meter.payAmount != null ? <Money v={meter.payAmount} /> : "-"} />
+                    <div className="flex items-center gap-1">
+                      <span className="shrink-0 text-slate-400">电费付款情况：</span>
+                      {meter.payStatus ? <StatusBadge status={meter.payStatus} /> : <span className="text-slate-300">-</span>}
+                    </div>
+                  </div>
+                </SectionCard>
+
+                {/* 3. 电费收款情况 */}
+                <SectionCard icon={Receipt} title="电费收款情况" color="text-emerald-600 bg-emerald-50 border-emerald-100">
+                  <div className="grid grid-cols-4 gap-x-6 gap-y-1.5 text-xs">
+                    <InfoRow
+                      label="电费收款区间"
+                      value={
+                        meter.collectStartDate && meter.collectEndDate
+                          ? `${fmtDate(meter.collectStartDate)} ~ ${fmtDate(meter.collectEndDate)}`
+                          : "-"
+                      }
+                    />
+                    <InfoRow label="收款度数" value={meter.payKwh != null ? fmtNum(meter.payKwh) : "-"} />
+                    <InfoRow label="电费收款单价" value={meter.collectUnitPrice != null ? `${fmtNum(meter.collectUnitPrice)} 元/度` : "-"} />
+                    {meter.taxEnabled && meter.postTaxPrice != null && (
+                      <InfoRow label="税后单价" value={<span className="text-emerald-600 font-medium">{fmtNum(meter.postTaxPrice)} 元/度</span>} />
+                    )}
+                    <InfoRow label="电费收入（含税）" value={meter.collectAmount != null ? <Money v={meter.collectAmount} /> : "-"} />
+                    <div className="flex items-center gap-1">
+                      <span className="shrink-0 text-slate-400">电费收款情况：</span>
+                      {meter.collectStatus ? <StatusBadge status={meter.collectStatus} /> : <span className="text-slate-300">-</span>}
+                    </div>
+                  </div>
+                </SectionCard>
+
+                {/* 4. 电费利润明细 */}
+                <SectionCard icon={TrendingUp} title="电费利润明细" color="text-blue-600 bg-blue-50 border-blue-100">
+                  <div className="grid grid-cols-3 gap-x-6 gap-y-1 text-xs">
+                    <InfoRow label="税率" value={meter.taxEnabled && meter.taxRate != null ? `${(meter.taxRate * 100).toFixed(1)}%` : "-"} />
+                    <InfoRow label="收入单价（不含税）" value={meter.postTaxPrice != null ? `${fmtNum(meter.postTaxPrice)} 元/度` : "-"} />
+                    <InfoRow label="电费收入（不含税）" value={meter.collectNet != null ? <Money v={meter.collectNet} /> : "-"} />
+                  </div>
+                </SectionCard>
+
+                {/* 5. 场地租金付款情况（来自合同） */}
+                {mv.contractRent && mv.contractRent.cost && mv.contractRent.cost.length > 0 && (
+                  <SectionCard icon={Home} title="场地租金付款情况" color="text-orange-600 bg-orange-50 border-orange-100">
+                    <div className="space-y-2">
+                      {mv.contractRent.cost.map((c: any) => (
+                        <div key={c.id} className="grid grid-cols-4 gap-x-6 gap-y-1 text-xs">
+                          <InfoRow label="场地方" value={c.partner || "-"} />
+                          <InfoRow label="年租金" value={c.annualRent != null ? <Money v={c.annualRent} /> : "-"} />
+                          <InfoRow label="月租金" value={c.monthlyRent != null ? <Money v={c.monthlyRent} /> : "-"} />
+                          <InfoRow label="付款方式" value={c.payMethod || "-"} />
+                          <InfoRow label="合同期限" value={c.startDate && c.endDate ? `${c.startDate} ~ ${c.endDate}` : "-"} />
+                          <div className="flex items-center gap-1">
+                            <span className="shrink-0 text-slate-400">付款状态：</span>
+                            {c.payStatus ? <StatusBadge status={c.payStatus} /> : <span className="text-slate-300">-</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </SectionCard>
+                )}
+
+                {/* 5.6 品牌方租金收款情况（来自合同） */}
+                {mv.contractRent && mv.contractRent.income && mv.contractRent.income.length > 0 && (
+                  <SectionCard icon={Home} title="品牌方租金收款情况" color="text-emerald-600 bg-emerald-50 border-emerald-100">
+                    <div className="space-y-2">
+                      {mv.contractRent.income.map((c: any) => (
+                        <div key={c.id} className="grid grid-cols-4 gap-x-6 gap-y-1 text-xs">
+                          <InfoRow label="品牌方" value={c.brandName || "-"} />
+                          <InfoRow label="年租金" value={c.annualRent != null ? <Money v={c.annualRent} /> : "-"} />
+                          <InfoRow label="月租金" value={c.monthlyRent != null ? <Money v={c.monthlyRent} /> : "-"} />
+                          <InfoRow label="付款方式" value={c.payMethod || "-"} />
+                          <InfoRow label="合同期限" value={c.startDate && c.endDate ? `${c.startDate} ~ ${c.endDate}` : "-"} />
+                          <div className="flex items-center gap-1">
+                            <span className="shrink-0 text-slate-400">收款状态：</span>
+                            {c.payStatus ? <StatusBadge status={c.payStatus} /> : <span className="text-slate-300">-</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </SectionCard>
+                )}
+
+                {/* 6. 用电量趋势 */}
+                {(meter.dailyEnergy?.length > 0 || meter.monthlyEnergy?.length > 0) && (
+                  <SectionCard icon={Zap} title="用电量数据" color="text-teal-600 bg-teal-50 border-teal-100">
+                    <div className="space-y-3">
+                      {/* 日用电量 */}
+                      {meter.dailyEnergy && meter.dailyEnergy.length > 0 && (
+                        <div>
+                          <div className="mb-1 text-[11px] font-semibold text-slate-500">本月日用电量</div>
+                          <div className="grid grid-cols-7 gap-0.5">
+                            {meter.dailyEnergy.map((d: any) => (
+                              <div key={d.day_date} className="rounded bg-white border px-1 py-0.5 text-center">
+                                <div className="text-[10px] text-slate-400">{d.day_date.slice(6, 8)}日</div>
+                                <div className="text-[11px] font-medium text-slate-700">{fmtNum(d.kwh)}</div>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="mt-1 text-right text-[11px] text-slate-500">
+                            月累计：<b>{fmtNum(meter.dailyEnergy.reduce((s: number, d: any) => s + Number(d.kwh || 0), 0))}</b> 度
+                          </div>
+                        </div>
+                      )}
+                      {/* 月用电量 */}
+                      {meter.monthlyEnergy && meter.monthlyEnergy.length > 0 && (
+                        <div>
+                          <div className="mb-1 text-[11px] font-semibold text-slate-500">近6个月用电量</div>
+                          <div className="flex gap-1">
+                            {meter.monthlyEnergy.slice(0, 6).reverse().map((m: any) => (
+                              <div key={m.month_period} className="flex-1 rounded bg-white border px-1 py-1 text-center">
+                                <div className="text-[10px] text-slate-400">{m.month_period.slice(4)}月</div>
+                                <div className="text-[11px] font-medium text-slate-700">{fmtNum(m.kwh)}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </SectionCard>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── 展开行详情组件 ───
-function ExpandedDetail({ landlordId, meters, stations }: { landlordId: number; meters: any[]; stations: any[] }) {
-  const th = "px-2.5 py-1.5 text-left text-[11px] font-medium text-slate-500";
-  const thR = "px-2.5 py-1.5 text-right text-[11px] font-medium text-slate-500";
-  const td = "px-2.5 py-1.5 text-[11px]";
-  const tdR = "px-2.5 py-1.5 text-right text-[11px] tabular-nums";
+function ExpandedDetail({ landlordId, meters, stations, period }: { landlordId: number; meters: any[]; stations: any[]; period: string }) {
+  const [selectedStationId, setSelectedStationId] = useState<number | null>(null);
+
+  // 如果选了站点，显示站点详情
+  if (selectedStationId !== null) {
+    return <StationMeterDetail stationId={selectedStationId} period={period} onBack={() => setSelectedStationId(null)} />;
+  }
 
   return (
     <div className="space-y-4 text-sm">
-      {/* 电表列表 */}
-      <div>
-        <h4 className="mb-1.5 text-xs font-semibold text-slate-700">电表列表（{meters.length} 个）</h4>
-        <div className="overflow-x-auto rounded-lg border">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b bg-slate-50">
-                <th className={th}>电表编号</th>
-                <th className={th}>品牌方</th>
-                <th className={th}>电表名称</th>
-                <th className={thR}>互感器倍数</th>
-                <th className={th}>状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              {meters.map((m: any) => (
-                <tr key={m.id} className="border-b last:border-0">
-                  <td className={`${td} font-mono`}>{m.meter_no}</td>
-                  <td className={td}>{m.brand_name ?? "-"}</td>
-                  <td className={td}>{m.meter_name ?? "-"}</td>
-                  <td className={tdR}>{fmtNum(m.transformer_ratio)}</td>
-                  <td className={td}>{m.status}</td>
-                </tr>
-              ))}
-              {meters.length === 0 && (
-                <tr><td colSpan={5} className="py-4 text-center text-slate-400">暂无电表</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* 站点信息 */}
+      {/* 站点列表 */}
       {stations.length > 0 && (
         <div>
-          <h4 className="mb-1.5 text-xs font-semibold text-slate-700">站点信息</h4>
-          <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b bg-slate-50">
-                  <th className={th}>站点名称</th>
-                  <th className={thR}>公司占股</th>
-                  <th className={th}>状态</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stations.map((s: any) => (
-                  <tr key={s.id} className="border-b last:border-0">
-                    <td className={`${td} font-medium`}>{s.name}</td>
-                    <td className={tdR}>{fmtPct(s.company_share)}</td>
-                    <td className={td}><StatusBadge status={s.status} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <h4 className="mb-1.5 text-xs font-semibold text-slate-700">站点（{stations.length} 个）</h4>
+          <div className="flex flex-wrap gap-2">
+            {stations.map((s: any) => (
+              <button
+                key={s.id}
+                onClick={() => setSelectedStationId(s.id)}
+                className="flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-left text-xs hover:border-emerald-400 hover:bg-emerald-50 transition-colors"
+              >
+                <div>
+                  <div className="font-medium text-slate-800">{s.name}</div>
+                  <div className="text-[11px] text-slate-400">占股 {fmtPct(s.company_share)} · {s.status}</div>
+                </div>
+              </button>
+            ))}
           </div>
         </div>
       )}
+
     </div>
   );
 }
@@ -93,7 +281,6 @@ export default function Stations() {
   });
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<any>(null);
-  const [drawerId, setDrawerId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const brands = useQuery({ queryKey: ["brands"], queryFn: listBrands });
@@ -166,8 +353,8 @@ export default function Stations() {
             {rows.map((r: any) => {
               const isExpanded = expandedId === r.landlord.id;
               return (
-                <>
-                  <tr key={r.landlord.id} className={`border-b hover:bg-slate-50/60 cursor-pointer ${isExpanded ? "bg-slate-50/80" : ""}`} onClick={() => toggleExpand(r.landlord.id)}>
+                <Fragment key={r.landlord.id}>
+                  <tr className={`border-b hover:bg-slate-50/60 cursor-pointer ${isExpanded ? "bg-slate-50/80" : ""}`} onClick={() => toggleExpand(r.landlord.id)}>
                     <td className="px-1 py-2.5 text-center">
                       {isExpanded ? <ChevronDown className="h-4 w-4 text-slate-400" /> : <ChevronRight className="h-4 w-4 text-slate-300" />}
                     </td>
@@ -207,11 +394,11 @@ export default function Stations() {
                   {isExpanded && (
                     <tr key={`${r.landlord.id}-expanded`}>
                       <td colSpan={11} className="border-b bg-white px-6 py-4">
-                        <ExpandedDetail landlordId={r.landlord.id} meters={r.meters} stations={r.stations} />
+                        <ExpandedDetail landlordId={r.landlord.id} meters={r.meters} stations={r.stations} period={selectedMonth} />
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               );
             })}
             {rows.length === 0 && (
@@ -238,7 +425,6 @@ export default function Stations() {
       </div>
 
       <StationForm open={formOpen} onClose={() => setFormOpen(false)} record={editing} />
-      {drawerId !== null && <StationDrawer stationId={drawerId} onClose={() => setDrawerId(null)} />}
     </div>
   );
 }

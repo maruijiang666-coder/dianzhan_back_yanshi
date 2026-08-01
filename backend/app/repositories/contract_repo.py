@@ -54,8 +54,9 @@ def create_contract(data: dict):
             INSERT INTO contracts
             (station_id, station_name, landlord_id, brand_id, contract_type,
              electricity_price, rent_amount, cabinets_count, unit_monthly_rent, monthly_rent,
-             pay_method, address, partner, pay_entity, start_date, end_date, pay_status, remark)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             rent_calc_method, pay_method, address, partner, pay_entity, start_date, end_date, pay_status,
+             tax_enabled, tax_rate, post_tax_electricity_price, remark)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
         """, (
             data.get("stationId"), data.get("stationName"),
@@ -63,10 +64,13 @@ def create_contract(data: dict):
             data.get("contractType", "场地合同"),
             data.get("electricityPrice"), data.get("rentAmount"),
             data.get("cabinetsCount"), data.get("unitMonthlyRent"), data.get("monthlyRent"),
+            data.get("rentCalcMethod", "按柜子数量"),
             data.get("payMethod"), data.get("address"),
             data.get("partner"), data.get("payEntity"),
             data.get("startDate"), data.get("endDate"),
-            data.get("payStatus", "未付款"), data.get("remark")
+            data.get("payStatus", "未付款"),
+            data.get("taxEnabled", False), data.get("taxRate", 0.01), data.get("postTaxElectricityPrice"),
+            data.get("remark")
         ))
         conn.commit()
         return cur.fetchone()
@@ -85,10 +89,14 @@ def update_contract(contract_id: int, data: dict):
             "contractType": "contract_type",
             "electricityPrice": "electricity_price", "rentAmount": "rent_amount",
             "cabinetsCount": "cabinets_count", "unitMonthlyRent": "unit_monthly_rent",
-            "monthlyRent": "monthly_rent", "payMethod": "pay_method",
+            "monthlyRent": "monthly_rent", "rentCalcMethod": "rent_calc_method",
+            "payMethod": "pay_method",
             "address": "address", "partner": "partner", "payEntity": "pay_entity",
             "startDate": "start_date", "endDate": "end_date",
-            "payStatus": "pay_status", "remark": "remark"
+            "payStatus": "pay_status",
+            "taxEnabled": "tax_enabled", "taxRate": "tax_rate",
+            "postTaxElectricityPrice": "post_tax_electricity_price",
+            "remark": "remark"
         }
         updates, values = [], []
         for key, db_field in field_map.items():

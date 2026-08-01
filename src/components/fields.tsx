@@ -12,14 +12,15 @@ export function Field({ label, children, span }: { label: string; children: Reac
 export const inputCls =
   "rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500";
 
-export function NumInput(props: { value: string; onChange: (v: string) => void; placeholder?: string; step?: string }) {
+export function NumInput(props: { value: string; onChange: (v: string) => void; placeholder?: string; step?: string; disabled?: boolean }) {
   return (
     <input
       type="number"
       step={props.step ?? "any"}
-      className={`${inputCls} w-full tabular-nums`}
+      className={`${inputCls} w-full tabular-nums ${props.disabled ? "bg-slate-50 text-slate-400 cursor-not-allowed" : ""}`}
       value={props.value}
       placeholder={props.placeholder}
+      disabled={props.disabled}
       onChange={(e) => props.onChange(e.target.value)}
     />
   );

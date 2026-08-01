@@ -243,6 +243,7 @@ CREATE TABLE IF NOT EXISTS contracts (
     cabinets_count NUMERIC(8,2),
     unit_monthly_rent NUMERIC(10,2),
     monthly_rent NUMERIC(12,2),
+    rent_calc_method VARCHAR(20) DEFAULT '按柜子数量',
     pay_method VARCHAR(50),
     address VARCHAR(300),
     partner VARCHAR(150),
@@ -250,6 +251,9 @@ CREATE TABLE IF NOT EXISTS contracts (
     start_date DATE,
     end_date DATE,
     pay_status VARCHAR(20) DEFAULT '未付款',
+    tax_enabled BOOLEAN DEFAULT FALSE,
+    tax_rate NUMERIC(6,4) DEFAULT 0.01,
+    post_tax_electricity_price NUMERIC(8,4),
     remark TEXT,
     created_at TIMESTAMP DEFAULT NOW()
 );
@@ -333,4 +337,61 @@ CREATE TABLE IF NOT EXISTS meter_warnings_cache (
     start_time TIMESTAMP,
     msg TEXT,
     synced_at TIMESTAMP
+);
+
+-- 小时用电量
+CREATE TABLE IF NOT EXISTS meter_hourly (
+    id SERIAL PRIMARY KEY,
+    device_id VARCHAR(50) NOT NULL,
+    address VARCHAR(100),
+    hour_time VARCHAR(10) NOT NULL,
+    kwh NUMERIC(14,2),
+    raw_data JSONB,
+    synced_at TIMESTAMP,
+    UNIQUE(device_id, hour_time)
+);
+
+-- 日用电量
+CREATE TABLE IF NOT EXISTS meter_daily (
+    id SERIAL PRIMARY KEY,
+    device_id VARCHAR(50) NOT NULL,
+    address VARCHAR(100),
+    day_date VARCHAR(8) NOT NULL,
+    kwh NUMERIC(14,2),
+    raw_data JSONB,
+    synced_at TIMESTAMP,
+    UNIQUE(device_id, day_date)
+);
+
+-- 年用电量
+CREATE TABLE IF NOT EXISTS meter_yearly (
+    id SERIAL PRIMARY KEY,
+    device_id VARCHAR(50) NOT NULL,
+    address VARCHAR(100),
+    year_period VARCHAR(4) NOT NULL,
+    kwh NUMERIC(14,2),
+    raw_data JSONB,
+    synced_at TIMESTAMP,
+    UNIQUE(device_id, year_period)
+);
+
+-- 采集器
+CREATE TABLE IF NOT EXISTS meter_collectors (
+    id VARCHAR(50) PRIMARY KEY,
+    collector_id VARCHAR(50),
+    description VARCHAR(200),
+    device_count INTEGER DEFAULT 0,
+    raw_data JSONB,
+    synced_at TIMESTAMP
+);
+
+-- 同步日志
+CREATE TABLE IF NOT EXISTS sync_logs (
+    id SERIAL PRIMARY KEY,
+    sync_type VARCHAR(50) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    records_synced INTEGER DEFAULT 0,
+    error_message TEXT,
+    started_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP
 );

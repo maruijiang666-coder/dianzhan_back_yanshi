@@ -1,17 +1,86 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listMeters, createMeter, updateMeter, deleteMeter, getMeter } from "@/api/meters";
 import { listCabinets, createCabinet, updateCabinet, deleteCabinet } from "@/api/cabinets";
 import { listStations } from "@/api/stations";
 import { listBrands, listLandlords } from "@/api/directory";
+import { triggerSync } from "@/api/meterEnergy";
 import { StatusBadge } from "@/components/Stat";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field, NumInput, TextInput, SelectInput, inputCls } from "@/components/fields";
 import { exportXlsx } from "@/lib/export";
 import { fmtNum, fmtDateTime } from "@/lib/format";
-import { Download, Search, Plus, Pencil, Trash2, Eye, Gauge, ChevronDown, ChevronRight, Box } from "lucide-react";
+import { Download, Search, Plus, Pencil, Trash2, Eye, Gauge, ChevronDown, ChevronRight, Box, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
+
+// ─── 倒计时格式化 ───
+function formatCountdown(seconds: number): string {
+  if (seconds <= 0) return "00:00";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+// ─── 刷新限制逻辑 ───
+const SYNC_LIMIT_KEY = "meter_sync_limit";
+const SYNC_MAX = 10;
+const SYNC_RESET_HOURS = 24;
+
+function getSyncState(): { count: number; resetAt: number } {
+  try {
+    const raw = localStorage.getItem(SYNC_LIMIT_KEY);
+    if (!raw) return { count: 0, resetAt: 0 };
+    const state = JSON.parse(raw);
+    // 超过24小时重置
+    if (Date.now() > state.resetAt) return { count: 0, resetAt: 0 };
+    return state;
+  } catch { return { count: 0, resetAt: 0 }; }
+}
+
+function useSyncLimit() {
+  const [state, setState] = useState(getSyncState);
+  const [countdown, setCountdown] = useState(0);
+  const timerRef = useRef<any>(null);
+
+  const remaining = Math.max(0, SYNC_MAX - state.count);
+  const isLimit = remaining <= 0;
+
+  // 重置倒计时
+  useEffect(() => {
+    if (isLimit && state.resetAt > Date.now()) {
+      const tick = () => {
+        const left = Math.max(0, Math.floor((state.resetAt - Date.now()) / 1000));
+        setCountdown(left);
+        if (left <= 0) setState({ count: 0, resetAt: 0 });
+      };
+      tick();
+      timerRef.current = setInterval(tick, 1000);
+      return () => clearInterval(timerRef.current);
+    }
+  }, [isLimit, state.resetAt]);
+
+  const consume = useCallback(() => {
+    const cur = getSyncState();
+    const next = {
+      count: cur.count + 1,
+      resetAt: cur.resetAt > Date.now() ? cur.resetAt : Date.now() + SYNC_RESET_HOURS * 3600 * 1000,
+    };
+    localStorage.setItem(SYNC_LIMIT_KEY, JSON.stringify(next));
+    setState(next);
+    return next.count;
+  }, []);
+
+  const resetTime = useMemo(() => {
+    if (!isLimit) return "";
+    const d = new Date(state.resetAt);
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }, [isLimit, state.resetAt]);
+
+  return { remaining, isLimit, countdown, resetTime, consume };
+}
 
 export default function Meters() {
   const [keyword, setKeyword] = useState("");
@@ -21,6 +90,32 @@ export default function Meters() {
   const [editRecord, setEditRecord] = useState<any>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [expandedMeterId, setExpandedMeterId] = useState<number | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState("");
+  const [syncConfirmOpen, setSyncConfirmOpen] = useState(false);
+  const [highlightCabinet, setHighlightCabinet] = useState(false);
+  const syncLimit = useSyncLimit();
+  const lastClickRef = useRef(0);
+  const cooldownRef = useRef(false);
+
+  // 从 URL 参数读取跳转信息
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const landlord = params.get("landlord");
+    const brand = params.get("brand");
+    const highlight = params.get("highlight");
+    if (landlord) setLandlordId(landlord);
+    if (brand) setBrandId(brand);
+    if (highlight === "cabinet") {
+      setHighlightCabinet(true);
+      // 5秒后取消高亮
+      setTimeout(() => setHighlightCabinet(false), 5000);
+    }
+    // 清除 URL 参数
+    if (landlord || brand || highlight) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   const queryClient = useQueryClient();
   const meters = useQuery({ queryKey: ["meters"], queryFn: () => listMeters() });
@@ -60,6 +155,60 @@ export default function Meters() {
     return [...groups.values()];
   }, [rows]);
 
+  const openSyncConfirm = () => {
+    // 节流：同步中、冷却中、达到上限都阻止
+    if (syncing || syncLimit.isLimit || cooldownRef.current) return;
+
+    // 防抖：2秒内重复点击忽略
+    const now = Date.now();
+    if (now - lastClickRef.current < 2000) {
+      toast.warning("请勿频繁点击");
+      return;
+    }
+    lastClickRef.current = now;
+
+    setSyncConfirmOpen(true);
+  };
+
+  const doSync = async () => {
+    setSyncConfirmOpen(false);
+
+    // 冷却：同步完成后5秒内不能再次点击
+    cooldownRef.current = true;
+    setSyncing(true);
+    syncLimit.consume();
+
+    const steps = [
+      { key: "devices", label: "设备列表" },
+      { key: "collectors", label: "采集器" },
+      { key: "status", label: "实时状态" },
+      { key: "hourly", label: "小时用电量" },
+      { key: "daily", label: "日用电量" },
+      { key: "monthly", label: "月用电量" },
+      { key: "warnings", label: "报警信息" },
+    ];
+
+    let ok = 0;
+    let fail = 0;
+    for (const step of steps) {
+      setSyncProgress(`${step.label} (${ok + fail + 1}/${steps.length})`);
+      try {
+        await triggerSync(step.key);
+        ok++;
+      } catch {
+        fail++;
+      }
+    }
+
+    setSyncing(false);
+    setSyncProgress("");
+    queryClient.invalidateQueries({ queryKey: ["meters"] });
+    toast.success(`同步完成：${ok} 成功${fail > 0 ? `，${fail} 失败` : ""}`);
+
+    // 冷却5秒后才能再次点击
+    setTimeout(() => { cooldownRef.current = false; }, 5000);
+  };
+
   const doExport = () => {
     if (rows.length === 0) { toast.error("暂无数据可导出"); return; }
     exportXlsx(`电表台账_${new Date().toISOString().slice(0, 10)}`, [{
@@ -95,6 +244,22 @@ export default function Meters() {
           {(brands.data ?? []).map((b: any) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
         </select>
         <div className="ml-auto flex gap-2">
+          {/* 刷新按钮 */}
+          <Button
+            variant="outline"
+            onClick={openSyncConfirm}
+            disabled={syncing || syncLimit.isLimit || cooldownRef.current}
+            className={`border-rose-200 text-rose-600 hover:bg-rose-50 hover:text-rose-700 ${syncLimit.isLimit ? "opacity-50" : ""}`}
+            title={syncLimit.isLimit ? `已达今日上限，${syncLimit.resetTime} 重置` : `剩余 ${syncLimit.remaining} 次`}
+          >
+            <RefreshCw className={`mr-1.5 h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
+            {syncing
+              ? syncProgress
+              : syncLimit.isLimit
+                ? `${formatCountdown(syncLimit.countdown)} 后重置`
+                : `刷新电表数据 (${syncLimit.remaining})`
+            }
+          </Button>
           <Button variant="outline" onClick={doExport}><Download className="mr-1.5 h-4 w-4" />导出表格</Button>
           <Button className="bg-emerald-600 hover:bg-emerald-700" onClick={() => { setEditRecord(null); setFormOpen(true); }}>
             <Plus className="mr-1.5 h-4 w-4" />新增电表
@@ -104,27 +269,37 @@ export default function Meters() {
 
       {/* 按场地方分组展示 */}
       <div className="space-y-4">
-        {groupedByLandlord.map((group: any) => (
-          <div key={group.landlordId} className="rounded-xl border bg-white shadow-sm">
-            <div className="border-b px-5 py-3 flex items-center gap-2">
-              <Gauge className="h-4 w-4 text-emerald-600" />
-              <span className="text-sm font-semibold text-slate-700">{group.landlordName}</span>
-              <span className="text-xs text-slate-400">（{group.meters.length} 个电表）</span>
+        {groupedByLandlord.map((group: any) => {
+          // 从 contracts 跳转过来时，自动展开第一个匹配的电表
+          const isTargetGroup = highlightCabinet && landlordId && group.landlordId === Number(landlordId);
+          if (isTargetGroup && expandedMeterId === null && group.meters.length > 0) {
+            // 延迟展开，避免 setState during render
+            setTimeout(() => setExpandedMeterId(group.meters[0].id), 100);
+          }
+
+          return (
+            <div key={group.landlordId} className="rounded-xl border bg-white shadow-sm">
+              <div className="border-b px-5 py-3 flex items-center gap-2">
+                <Gauge className="h-4 w-4 text-emerald-600" />
+                <span className="text-sm font-semibold text-slate-700">{group.landlordName}</span>
+                <span className="text-xs text-slate-400">（{group.meters.length} 个电表）</span>
+              </div>
+              <div className="p-3 space-y-2">
+                {group.meters.map((m: any) => (
+                  <MeterCard
+                    key={m.id}
+                    meter={m}
+                    isExpanded={expandedMeterId === m.id}
+                    onToggle={() => toggleExpand(m.id)}
+                    onEdit={() => { setEditRecord(m); setFormOpen(true); }}
+                    onDelete={() => window.confirm("删除该电表？") && del.mutate(m.id)}
+                    highlightCabinet={isTargetGroup && expandedMeterId === m.id}
+                  />
+                ))}
+              </div>
             </div>
-            <div className="p-3 space-y-2">
-              {group.meters.map((m: any) => (
-                <MeterCard
-                  key={m.id}
-                  meter={m}
-                  isExpanded={expandedMeterId === m.id}
-                  onToggle={() => toggleExpand(m.id)}
-                  onEdit={() => { setEditRecord(m); setFormOpen(true); }}
-                  onDelete={() => window.confirm("删除该电表？") && del.mutate(m.id)}
-                />
-              ))}
-            </div>
-          </div>
-        ))}
+          );
+        })}
         {groupedByLandlord.length === 0 && (
           <div className="rounded-xl border border-dashed py-16 text-center text-slate-400">
             {meters.isLoading ? "加载中…" : "暂无电表数据"}
@@ -133,13 +308,46 @@ export default function Meters() {
       </div>
 
       <MeterForm open={formOpen} onClose={() => { setFormOpen(false); setEditRecord(null); }} record={editRecord} />
+
+      {/* 刷新确认弹窗 */}
+      <Dialog open={syncConfirmOpen} onOpenChange={(o) => !o && setSyncConfirmOpen(false)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-rose-600">
+              <RefreshCw className="h-5 w-5" />
+              确认刷新电表数据
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5 text-xs text-amber-800">
+              <p className="font-semibold mb-1">⚠️ 注意次数限制</p>
+              <p>每天最多刷新 <b>10 次</b>，24小时后重置。</p>
+              <p className="mt-1">本次刷新后剩余 <b className="text-rose-600">{syncLimit.remaining - 1}</b> 次。</p>
+            </div>
+            <div className="text-xs text-slate-500">
+              将同步以下数据：<br />
+              设备列表、采集器、实时状态、小时/日/月用电量、报警信息
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="outline" size="sm" onClick={() => setSyncConfirmOpen(false)}>取消</Button>
+              <Button
+                size="sm"
+                className="bg-rose-600 hover:bg-rose-700"
+                onClick={doSync}
+              >
+                确认刷新
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 // ─── 电表卡片组件 ───
-function MeterCard({ meter, isExpanded, onToggle, onEdit, onDelete }: {
-  meter: any; isExpanded: boolean; onToggle: () => void; onEdit: () => void; onDelete: () => void;
+function MeterCard({ meter, isExpanded, onToggle, onEdit, onDelete, highlightCabinet }: {
+  meter: any; isExpanded: boolean; onToggle: () => void; onEdit: () => void; onDelete: () => void; highlightCabinet?: boolean;
 }) {
   const queryClient = useQueryClient();
   const cabinets = useQuery({
@@ -187,7 +395,12 @@ function MeterCard({ meter, isExpanded, onToggle, onEdit, onDelete }: {
         <div className="border-t px-4 py-3">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-semibold text-slate-600">柜子列表（{Math.max(1, (cabinets.data ?? []).length)} 个）</span>
-            <Button size="sm" variant="outline" onClick={() => { setEditCabinet(null); setCabinetFormOpen(true); }}>
+            <Button
+              size="sm"
+              variant="outline"
+              className={highlightCabinet ? "ring-2 ring-rose-400 border-rose-400 text-rose-600 animate-breath" : ""}
+              onClick={() => { setEditCabinet(null); setCabinetFormOpen(true); }}
+            >
               <Plus className="mr-1 h-3 w-3" />添加柜子
             </Button>
           </div>

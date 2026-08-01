@@ -1,6 +1,6 @@
 import client from "./client";
 
-export const listContracts = (params?: { brandId?: number; keyword?: string }) =>
+export const listContracts = (params?: { brandId?: number; landlordId?: number; contractType?: string; keyword?: string }) =>
   client.get("/contracts", { params }).then(r => r.data);
 
 export const createContract = (data: any) =>

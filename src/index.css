@@ -96,3 +96,19 @@
     display: none !important;
   }
 }
+
+/* 呼吸动画效果 */
+@keyframes breath {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.8;
+  }
+}
+
+.animate-breath {
+  animation: breath 1.5s ease-in-out infinite;
+}
