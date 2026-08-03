@@ -59,21 +59,20 @@ export default function Contracts() {
     };
   }, [list.data]);
 
-  // 按站点分组，并分离场地合同和品牌方合同
-  const groupedByStation = useMemo(() => {
+  // 按场地方分组，并分离场地合同和品牌方合同
+  const groupedByLandlord = useMemo(() => {
     const groups = new Map<number, any>();
     for (const r of rows) {
-      const sid = r.station_id || 0;
-      if (!groups.has(sid)) {
-        groups.set(sid, {
-          stationId: sid,
-          stationName: r.station_name,
-          landlordName: r.landlord_name,
+      const lid = r.landlord_id || 0;
+      if (!groups.has(lid)) {
+        groups.set(lid, {
+          landlordId: lid,
+          landlordName: r.landlord_name || "未关联场地方",
           costContracts: [],   // 场地合同
           incomeContracts: [], // 品牌方合同
         });
       }
-      const group = groups.get(sid);
+      const group = groups.get(lid);
       if (r.contract_type === "品牌方合同") {
         group.incomeContracts.push(r);
       } else {
@@ -162,18 +161,17 @@ export default function Contracts() {
 
       {/* 按站点分组展示 */}
       <div className="space-y-6">
-        {groupedByStation.map((group: any) => {
+        {groupedByLandlord.map((group: any) => {
           const totalCost = group.costContracts.reduce((t: number, c: any) => t + (c.monthly_rent ? Number(c.monthly_rent) : 0), 0);
           const totalIncome = group.incomeContracts.reduce((t: number, c: any) => t + (c.monthly_rent ? Number(c.monthly_rent) : 0), 0);
 
           return (
-            <div key={group.stationId} className="rounded-xl border bg-white shadow-sm">
-              {/* 站点头部 */}
+            <div key={group.landlordId} className="rounded-xl border bg-white shadow-sm">
+              {/* 场地方头部 */}
               <div className="border-b px-5 py-3 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <FileText className="h-4 w-4 text-emerald-600" />
-                  <span className="text-sm font-semibold text-slate-700">{group.stationName || "未关联站点"}</span>
-                  {group.landlordName && <span className="text-xs text-slate-400">场地方：{group.landlordName}</span>}
+                  <span className="text-sm font-semibold text-slate-700">{group.landlordName}</span>
                 </div>
                 <div className="flex items-center gap-4 text-xs">
                   <span className="text-rose-600">月成本 <b className="tabular-nums">{fmtMoney(totalCost)}</b></span>
@@ -294,7 +292,7 @@ export default function Contracts() {
             </div>
           );
         })}
-        {groupedByStation.length === 0 && (
+        {groupedByLandlord.length === 0 && (
           <div className="rounded-xl border border-dashed py-16 text-center text-slate-400">
             {list.isLoading ? "加载中…" : "暂无合同数据"}
           </div>
@@ -352,13 +350,26 @@ function ContractForm({ open, onClose, record, defaultType }: { open: boolean; o
     }
   }, [f.rentCalcMethod, f.unitMonthlyRent, f.cabinetsCount]);
 
-  // 自动计算年租金 = 场地月租金 × 12
-  useEffect(() => {
-    if (f.monthlyRent) {
-      const annualRent = Number(f.monthlyRent) * 12;
-      setF((prev) => ({ ...prev, rentAmount: String(annualRent) }));
-    }
-  }, [f.monthlyRent]);
+  // 年租金和月租金互算（在输入时直接计算，避免循环依赖）
+  const handleMonthlyRentChange = (v: string) => {
+    setF((prev) => {
+      const updates: any = { monthlyRent: v };
+      if (v) {
+        updates.rentAmount = String(Math.round(Number(v) * 12 * 100) / 100);
+      }
+      return { ...prev, ...updates };
+    });
+  };
+
+  const handleRentAmountChange = (v: string) => {
+    setF((prev) => {
+      const updates: any = { rentAmount: v };
+      if (v) {
+        updates.monthlyRent = String(Math.round((Number(v) / 12) * 100) / 100);
+      }
+      return { ...prev, ...updates };
+    });
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -452,8 +463,8 @@ function ContractForm({ open, onClose, record, defaultType }: { open: boolean; o
                 }}
                   options={[{ value: "", label: "请选择场地方" }, ...(landlords.data ?? []).map((l: any) => ({ value: String(l.id), label: l.name }))]} />
               </Field>
-              <Field label="年租金（元）"><NumInput value={f.rentAmount} onChange={set("rentAmount")} /></Field>
-              <Field label="月租金（元）"><NumInput value={f.monthlyRent} onChange={set("monthlyRent")} /></Field>
+              <Field label="年租金（元）"><NumInput value={f.rentAmount} onChange={handleRentAmountChange} /></Field>
+              <Field label="月租金（元）"><NumInput value={f.monthlyRent} onChange={handleMonthlyRentChange} /></Field>
               <Field label="电费单价（元/度）"><NumInput value={f.electricityPrice} onChange={set("electricityPrice")} placeholder="0.65" /></Field>
               <Field label="场地租金付款方式">
                 <SelectInput value={f.payMethod} onChange={set("payMethod")}
@@ -515,7 +526,7 @@ function ContractForm({ open, onClose, record, defaultType }: { open: boolean; o
               <Field label="场地月租金（元）">
                 <NumInput
                   value={f.monthlyRent}
-                  onChange={set("monthlyRent")}
+                  onChange={handleMonthlyRentChange}
                   disabled={f.rentCalcMethod === "按柜子数量"}
                   placeholder={f.rentCalcMethod === "按柜子数量" ? "自动计算" : "请输入"}
                 />
@@ -523,7 +534,6 @@ function ContractForm({ open, onClose, record, defaultType }: { open: boolean; o
               <Field label="年租金（元）">
                 <NumInput
                   value={f.rentAmount}
-                  onChange={set("rentAmount")}
                   disabled
                   placeholder="自动计算"
                 />

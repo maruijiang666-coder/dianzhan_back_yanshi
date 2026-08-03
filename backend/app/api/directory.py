@@ -153,3 +153,64 @@ async def update_introducer(introducer_id: int, data: dict):
 async def delete_introducer(introducer_id: int):
     directory_repo.delete_introducer(introducer_id)
     return {"ok": True}
+
+
+# ─── 公司主体-品牌方关联 ─────────────────────────────────────
+
+@router.get("/entity-brands")
+async def list_entity_brands(entityId: int = None):
+    return directory_repo.list_entity_brands(entity_id=entityId)
+
+
+@router.post("/entity-brands", status_code=201)
+async def create_entity_brand(data: dict):
+    return directory_repo.create_entity_brand(
+        entity_id=data.get("entityId"),
+        brand_id=data.get("brandId"),
+        remark=data.get("remark"),
+    )
+
+
+@router.delete("/entity-brands/{id}")
+async def delete_entity_brand(id: int):
+    directory_repo.delete_entity_brand(id)
+    return {"ok": True}
+
+
+# ─── 平台使用人员 ─────────────────────────────────────────────
+
+@router.get("/platform-users")
+async def list_platform_users():
+    return directory_repo.list_platform_users()
+
+
+@router.post("/platform-users", status_code=201)
+async def create_platform_user(data: dict):
+    return directory_repo.create_platform_user(
+        name=data.get("name", ""),
+        role=data.get("role", ""),
+        shareholder_id=data.get("shareholderId"),
+        phone=data.get("phone"),
+        remark=data.get("remark"),
+    )
+
+
+@router.put("/platform-users/{user_id}")
+async def update_platform_user(user_id: int, data: dict):
+    result = directory_repo.update_platform_user(
+        user_id,
+        name=data.get("name"),
+        role=data.get("role"),
+        shareholder_id=data.get("shareholderId"),
+        phone=data.get("phone"),
+        remark=data.get("remark"),
+    )
+    if not result:
+        raise HTTPException(404, "用户不存在")
+    return result
+
+
+@router.delete("/platform-users/{user_id}")
+async def delete_platform_user(user_id: int):
+    directory_repo.delete_platform_user(user_id)
+    return {"ok": True}

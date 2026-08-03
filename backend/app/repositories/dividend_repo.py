@@ -31,18 +31,21 @@ def save_shareholder_config(data: dict):
     try:
         cur.execute("""
             INSERT INTO station_shareholder_configs
-            (station_id, shareholder_id, mode, ratio, fixed_amount, settlement_period, remark)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            (station_id, shareholder_id, mode, ratio, fixed_amount, settlement_period, start_date, end_date, remark)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (station_id, shareholder_id)
             DO UPDATE SET mode = EXCLUDED.mode, ratio = EXCLUDED.ratio,
                           fixed_amount = EXCLUDED.fixed_amount,
                           settlement_period = EXCLUDED.settlement_period,
+                          start_date = EXCLUDED.start_date,
+                          end_date = EXCLUDED.end_date,
                           remark = EXCLUDED.remark
             RETURNING *
         """, (
             data.get("stationId"), data.get("shareholderId"),
             data.get("mode"), data.get("ratio"),
             data.get("fixedAmount"), data.get("settlementPeriod", "月"),
+            data.get("startDate"), data.get("endDate"),
             data.get("remark")
         ))
         conn.commit()
@@ -92,20 +95,24 @@ def save_introducer_config(data: dict):
     try:
         cur.execute("""
             INSERT INTO station_introducer_configs
-            (station_id, introducer_id, mode, ratio, fixed_amount, settlement_period, count_as_cost, remark)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            (station_id, introducer_id, mode, ratio, fixed_amount, settlement_period, count_as_cost, start_date, end_date, remark)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (station_id, introducer_id)
             DO UPDATE SET mode = EXCLUDED.mode, ratio = EXCLUDED.ratio,
                           fixed_amount = EXCLUDED.fixed_amount,
                           settlement_period = EXCLUDED.settlement_period,
                           count_as_cost = EXCLUDED.count_as_cost,
+                          start_date = EXCLUDED.start_date,
+                          end_date = EXCLUDED.end_date,
                           remark = EXCLUDED.remark
             RETURNING *
         """, (
             data.get("stationId"), data.get("introducerId"),
             data.get("mode"), data.get("ratio"),
             data.get("fixedAmount"), data.get("settlementPeriod", "月"),
-            data.get("countAsCost", False), data.get("remark")
+            data.get("countAsCost", False),
+            data.get("startDate"), data.get("endDate"),
+            data.get("remark")
         ))
         conn.commit()
         return cur.fetchone()

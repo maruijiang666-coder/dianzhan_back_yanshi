@@ -1,12 +1,10 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getStation, getStationMeterView } from "@/api/stations";
-import { listElectricity, deleteElectricity } from "@/api/electricity";
 import { listLeases, deleteLease, listIncomes, deleteIncome } from "@/api/rent";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Money, StatusBadge } from "@/components/Stat";
-import { ElecForm } from "./ElecForm";
 import { LeaseForm, RentIncomeForm } from "./RentForms";
 import { DividendForm } from "./DividendForm";
 import { MonthPicker } from "./MonthPicker";
@@ -47,25 +45,18 @@ export function StationDrawer({ stationId, onClose }: { stationId: number; onClo
     queryFn: () => getStationMeterView(stationId, period),
     enabled: !!period,
   });
-  const elec = useQuery({ queryKey: ["electricity", stationId], queryFn: () => listElectricity({ stationId }) });
   const leases = useQuery({ queryKey: ["rentLeases", stationId], queryFn: () => listLeases({ stationId }) });
   const incomes = useQuery({ queryKey: ["rentIncomes", stationId], queryFn: () => listIncomes({ stationId }) });
 
-  const [elecOpen, setElecOpen] = useState(false);
-  const [elecEdit, setElecEdit] = useState<any>(null);
   const [leaseOpen, setLeaseOpen] = useState(false);
   const [leaseEdit, setLeaseEdit] = useState<any>(null);
   const [incomeOpen, setIncomeOpen] = useState(false);
   const [incomeEdit, setIncomeEdit] = useState<any>(null);
   const [dividendOpen, setDividendOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"meters" | "elec" | "rent" | "shareholder">("meters");
+  const [activeTab, setActiveTab] = useState<"meters" | "rent" | "shareholder">("meters");
 
   const invalidate = () => queryClient.invalidateQueries();
 
-  const delElec = useMutation({
-    mutationFn: deleteElectricity,
-    onSuccess: () => { toast.success("已删除"); invalidate(); },
-  });
   const delLease = useMutation({
     mutationFn: deleteLease,
     onSuccess: () => { toast.success("已删除"); invalidate(); },
@@ -107,7 +98,7 @@ export function StationDrawer({ stationId, onClose }: { stationId: number; onClo
 
         {/* Tab 导航 */}
         <div className="mt-4 flex gap-1 border-b">
-          {(["meters", "elec", "rent", "shareholder"] as const).map(tab => (
+          {(["meters", "rent", "shareholder"] as const).map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -117,7 +108,7 @@ export function StationDrawer({ stationId, onClose }: { stationId: number; onClo
                   : "border-transparent text-slate-400 hover:text-slate-600"
               }`}
             >
-              {tab === "meters" ? "电表总览" : tab === "elec" ? "电费台账" : tab === "rent" ? "场地租金" : "股东配置"}
+              {tab === "meters" ? "电表总览" : tab === "rent" ? "场地租金" : "股东配置"}
             </button>
           ))}
         </div>
@@ -125,12 +116,9 @@ export function StationDrawer({ stationId, onClose }: { stationId: number; onClo
         {/* 电表总览 */}
         {activeTab === "meters" && (
           <div className="mt-4 space-y-4">
-            {/* 月份选择 + 操作按钮 */}
+            {/* 月份选择 */}
             <div className="flex items-center gap-3">
               <MonthPicker value={period} onChange={setPeriod} />
-              <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => { setElecEdit(null); setElecOpen(true); }}>
-                <Plus className="mr-1 h-3.5 w-3.5" />新增电费
-              </Button>
             </div>
 
             {meterView.isLoading && <div className="py-10 text-center text-slate-400">加载中…</div>}
@@ -255,46 +243,7 @@ export function StationDrawer({ stationId, onClose }: { stationId: number; onClo
           </div>
         )}
 
-        {/* 电费台账（保留原有） */}
-        {activeTab === "elec" && (
-          <div className="mt-4 space-y-3">
-            <div className="flex justify-end">
-              <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => { setElecEdit(null); setElecOpen(true); }}>
-                <Plus className="mr-1 h-3.5 w-3.5" />新增电费
-              </Button>
-            </div>
-            <div className="overflow-x-auto rounded-lg border">
-              <table className="w-full text-xs">
-                <thead><tr className="border-b bg-slate-50">
-                  <th className={th}>期间</th><th className={thR}>付款金额</th><th className={th}>付款</th>
-                  <th className={thR}>收款金额</th><th className={th}>到账</th><th className={thR}>利润</th>
-                  <th className={`${th} text-center`}>操作</th>
-                </tr></thead>
-                <tbody>
-                  {(elec.data ?? []).map((r: any) => (
-                    <tr key={r.id} className="border-b last:border-0">
-                      <td className="px-2.5 py-2 font-medium">{r.period}</td>
-                      <td className="px-2.5 py-2 text-right"><Money v={r.pay_amount} /></td>
-                      <td className="px-2.5 py-2"><StatusBadge status={r.pay_status} /></td>
-                      <td className="px-2.5 py-2 text-right"><Money v={r.collect_amount} /></td>
-                      <td className="px-2.5 py-2"><StatusBadge status={r.collect_status} /></td>
-                      <td className="px-2.5 py-2 text-right"><Money v={r.profit} strong /></td>
-                      <td className="px-2.5 py-2">
-                        <div className="flex justify-center gap-0.5">
-                          <button className="rounded p-1 text-slate-400 hover:text-emerald-600" onClick={() => { setElecEdit(r); setElecOpen(true); }}><Pencil className="h-3.5 w-3.5" /></button>
-                          <button className="rounded p-1 text-slate-400 hover:text-rose-500" onClick={() => window.confirm("删除？") && delElec.mutate(r.id)}><Trash2 className="h-3.5 w-3.5" /></button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                  {(elec.data ?? []).length === 0 && <tr><td colSpan={7} className="py-6 text-center text-slate-400">暂无电费记录</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* 场地租金（保留原有） */}
+        {/* 场地租金 */}
         {activeTab === "rent" && (
           <div className="mt-4 space-y-4">
             <div>
@@ -393,7 +342,6 @@ export function StationDrawer({ stationId, onClose }: { stationId: number; onClo
         )}
       </SheetContent>
 
-      <ElecForm open={elecOpen} onClose={() => { setElecOpen(false); setElecEdit(null); }} stationId={stationId} record={elecEdit} />
       <LeaseForm open={leaseOpen} onClose={() => { setLeaseOpen(false); setLeaseEdit(null); }} stationId={stationId} record={leaseEdit} />
       <RentIncomeForm open={incomeOpen} onClose={() => { setIncomeOpen(false); setIncomeEdit(null); }} stationId={stationId} record={incomeEdit} />
       <DividendForm open={dividendOpen} onClose={() => setDividendOpen(false)} presetStationId={stationId} />

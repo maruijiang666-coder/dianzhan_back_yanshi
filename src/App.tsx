@@ -5,7 +5,9 @@ import Dashboard from "@/pages/Dashboard";
 import Stations from "@/pages/Stations";
 import Electricity from "@/pages/Electricity";
 import Rent from "@/pages/Rent";
-import DimensionBoard from "@/pages/DimensionBoard";
+import Brands from "@/pages/Brands";
+import Entities from "@/pages/Entities";
+import Landlords from "@/pages/Landlords";
 import Shareholders from "@/pages/Shareholders";
 import Contracts from "@/pages/Contracts";
 import Approvals from "@/pages/Approvals";
@@ -22,9 +24,9 @@ export default function App() {
           <Route path="/stations" element={<Stations />} />
           <Route path="/electricity" element={<Electricity />} />
           <Route path="/rent" element={<Rent />} />
-          <Route path="/brands" element={<DimensionBoard kind="brand" />} />
-          <Route path="/entities" element={<DimensionBoard kind="entity" />} />
-          <Route path="/landlords" element={<DimensionBoard kind="landlord" />} />
+          <Route path="/brands" element={<Brands />} />
+          <Route path="/entities" element={<Entities />} />
+          <Route path="/landlords" element={<Landlords />} />
           <Route path="/shareholders" element={<Shareholders />} />
           <Route path="/contracts" element={<Contracts />} />
           <Route path="/approvals" element={<Approvals />} />

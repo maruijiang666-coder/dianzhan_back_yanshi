@@ -38,6 +38,17 @@ async def get_request(request_id: int):
 
 @router.post("", status_code=201)
 async def create_request(data: dict):
+    # 如果指定了审批人，动态构建审批流程
+    approvers = data.get("approvers")
+    if approvers and data.get("bizType") == "分红审批":
+        import json
+        nodes = []
+        if approvers.get("finance_supervisor"):
+            nodes.append({"name": "财务主管审核", "approver": approvers["finance_supervisor"]})
+        if approvers.get("boss"):
+            nodes.append({"name": "老板审批", "approver": approvers["boss"]})
+        if nodes:
+            data["flowNodes"] = nodes
     return approval_repo.create_request(data)
 
 
@@ -62,3 +73,22 @@ async def act_on_request(request_id: int, data: dict):
 @router.get("/stats/overview")
 async def get_stats():
     return approval_repo.get_stats()
+
+
+@router.get("/by-dividend/{dividend_id}")
+async def get_by_dividend(dividend_id: int):
+    """查询分红记录关联的审批单"""
+    from ..infra.database import get_connection, get_dict_cursor
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        cur.execute("SELECT id FROM approval_requests WHERE dividend_record_id = %s ORDER BY created_at DESC LIMIT 1", (dividend_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        request = approval_repo.get_request(row["id"])
+        records = approval_repo.get_records(row["id"])
+        return {**request, "records": records}
+    finally:
+        cur.close()
+        conn.close()

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { listElectricity, listPeriods, deleteElectricity } from "@/api/electricity";
+import { listElectricity, listPeriods, deleteElectricity, generateElectricity } from "@/api/electricity";
 import { listBrands } from "@/api/directory";
 import { listStations } from "@/api/stations";
 import { Money, StatusBadge } from "@/components/Stat";
@@ -9,11 +9,14 @@ import { inputCls } from "@/components/fields";
 import { ElecForm } from "@/components/ElecForm";
 import { exportXlsx } from "@/lib/export";
 import { fmtMoney, fmtNum, fmtDate } from "@/lib/format";
-import { Download, Plus, Pencil, Trash2, Search } from "lucide-react";
+import { Download, Plus, Pencil, Trash2, Search, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Electricity() {
-  const [period, setPeriod] = useState("");
+  const [period, setPeriod] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
   const [stationId, setStationId] = useState("");
   const [keyword, setKeyword] = useState("");
   const [edit, setEdit] = useState<any>(null);
@@ -30,6 +33,19 @@ export default function Electricity() {
   const del = useMutation({
     mutationFn: deleteElectricity,
     onSuccess: () => { toast.success("已删除"); queryClient.invalidateQueries({ queryKey: ["electricity"] }); },
+  });
+
+  const gen = useMutation({
+    mutationFn: () => {
+      if (!period) throw new Error("请先选择月份");
+      return generateElectricity({ period });
+    },
+    onSuccess: (res: any) => {
+      toast.success(res.detail || `生成 ${res.created} 条`);
+      queryClient.invalidateQueries({ queryKey: ["electricity"] });
+      queryClient.invalidateQueries({ queryKey: ["electricityPeriods"] });
+    },
+    onError: (e: any) => toast.error(e.message || "生成失败"),
   });
 
   const rows = useMemo(() => {
@@ -74,15 +90,15 @@ export default function Electricity() {
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
           <input className={`${inputCls} w-48 pl-8`} placeholder="搜索站点名称…" value={keyword} onChange={(e) => setKeyword(e.target.value)} />
         </div>
-        <select className={`${inputCls} w-40`} value={period} onChange={(e) => setPeriod(e.target.value)}>
-          <option value="">全部月份</option>
-          {(periods.data ?? []).map((p: string) => <option key={p} value={p}>{p}</option>)}
-        </select>
+        <input className={`${inputCls} w-36`} type="month" value={period ? `${period.slice(0, 4)}-${period.slice(4)}` : ""} onChange={(e) => setPeriod(e.target.value ? e.target.value.replace("-", "") : "")} />
         <select className={`${inputCls} w-48`} value={stationId} onChange={(e) => setStationId(e.target.value)}>
           <option value="">全部站点</option>
           {(stations.data ?? []).map((s: any) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
         </select>
         <div className="ml-auto flex gap-2">
+          <Button variant="outline" disabled={gen.isPending || !period} onClick={() => gen.mutate()}>
+            <RefreshCw className={`mr-1.5 h-4 w-4 ${gen.isPending ? "animate-spin" : ""}`} />自动生成
+          </Button>
           <Button variant="outline" onClick={doExport}><Download className="mr-1.5 h-4 w-4" />导出表格</Button>
           <Button className="bg-emerald-600 hover:bg-emerald-700" onClick={() => { setEdit(null); setFormOpen(true); }}>
             <Plus className="mr-1.5 h-4 w-4" />新增电费

@@ -14,11 +14,13 @@ def list_meters(station_id: int = None, brand_id: int = None, landlord_id: int =
             conditions.append("m.landlord_id = %s"); values.append(landlord_id)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cur.execute(f"""
-            SELECT m.*, s.name as station_name, b.name as brand_name, l.name as landlord_name
+            SELECT m.*, s.name as station_name, b.name as brand_name, l.name as landlord_name,
+                   e.name as entity_name
             FROM meters m
             LEFT JOIN stations s ON m.station_id = s.id
             LEFT JOIN brands b ON m.brand_id = b.id
             LEFT JOIN landlords l ON m.landlord_id = l.id
+            LEFT JOIN entities e ON m.entity_id = e.id
             {where}
             ORDER BY m.landlord_id, m.id
         """, values)
@@ -33,11 +35,13 @@ def get_meter(meter_id: int):
     cur = get_dict_cursor(conn)
     try:
         cur.execute("""
-            SELECT m.*, s.name as station_name, b.name as brand_name, l.name as landlord_name
+            SELECT m.*, s.name as station_name, b.name as brand_name, l.name as landlord_name,
+                   e.name as entity_name
             FROM meters m
             LEFT JOIN stations s ON m.station_id = s.id
             LEFT JOIN brands b ON m.brand_id = b.id
             LEFT JOIN landlords l ON m.landlord_id = l.id
+            LEFT JOIN entities e ON m.entity_id = e.id
             WHERE m.id = %s
         """, (meter_id,))
         return cur.fetchone()
@@ -62,11 +66,12 @@ def create_meter(data: dict):
     cur = get_dict_cursor(conn)
     try:
         cur.execute("""
-            INSERT INTO meters (station_id, brand_id, landlord_id, meter_no, meter_name, collector_id, transformer_ratio, remark)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO meters (station_id, brand_id, landlord_id, entity_id, meter_no, meter_name, collector_id, transformer_ratio, remark)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
         """, (
             data.get("stationId"), data.get("brandId"), data.get("landlordId"),
+            data.get("entityId"),
             data.get("meterNo"), data.get("meterName"), data.get("collectorId"),
             data.get("transformerRatio", 1), data.get("remark")
         ))
@@ -83,6 +88,7 @@ def update_meter(meter_id: int, data: dict):
     try:
         field_map = {
             "stationId": "station_id", "brandId": "brand_id", "landlordId": "landlord_id",
+            "entityId": "entity_id",
             "meterNo": "meter_no", "meterName": "meter_name",
             "collectorId": "collector_id", "transformerRatio": "transformer_ratio",
             "status": "status", "remark": "remark"

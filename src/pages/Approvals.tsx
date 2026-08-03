@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { listApprovals, createApproval, actOnApproval, getApprovalStats, listFlows } from "@/api/approvals";
+import { listApprovals, createApproval, actOnApproval, getApprovalStats, listFlows, getApproval, getApprovalByDividend } from "@/api/approvals";
+import { calculateDividend } from "@/api/dividends";
 import { StatCard, Money, StatusBadge } from "@/components/Stat";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -8,11 +9,10 @@ import { Field, NumInput, TextInput, SelectInput, inputCls } from "@/components/
 import { exportXlsx } from "@/lib/export";
 import { fmtMoney, fmtNum, fmtDateTime, numOrNull, strOrNull } from "@/lib/format";
 import {
-  Plus, FileCheck2, Clock, CheckCircle2, XCircle, Printer, Download, Bell,
+  Plus, FileCheck2, Clock, CheckCircle2, XCircle, Download, Bell,
+  ChevronDown, ChevronRight, User, MapPin, Calendar, Check, X, ArrowRight,
 } from "lucide-react";
 import { toast } from "sonner";
-
-type FlowNode = { name: string; approver: string; timeoutHours?: number | null };
 
 // ─── 审批操作弹窗 ───
 function ActDialog(props: {
@@ -77,9 +77,342 @@ function ActDialog(props: {
   );
 }
 
+// ─── 审批流程可视化 ───
+function FlowTimeline({ flowNodes, records, status, currentNode }: { flowNodes: any[]; records: any[]; status: string; currentNode: number }) {
+  return (
+    <div className="space-y-0">
+      {flowNodes.map((node: any, i: number) => {
+        const record = records?.find((r: any) => r.node_index === i && r.action !== "提交");
+        const submitRecord = records?.find((r: any) => r.node_index === i && r.action === "提交");
+        const isCompleted = i < currentNode || (status === "已通过");
+        const isCurrent = i === currentNode && status === "审批中";
+        const isRejected = records?.some((r: any) => r.action === "驳回" && r.node_index === i);
+
+        return (
+          <div key={i} className="flex gap-3">
+            {/* 时间线节点 */}
+            <div className="flex flex-col items-center">
+              <div className={`flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-semibold ${
+                isRejected ? "bg-rose-100 text-rose-600 border-2 border-rose-300" :
+                isCompleted ? "bg-emerald-100 text-emerald-600 border-2 border-emerald-300" :
+                isCurrent ? "bg-blue-100 text-blue-600 border-2 border-blue-400 animate-pulse" :
+                "bg-slate-100 text-slate-400 border-2 border-slate-200"
+              }`}>
+                {isRejected ? <X className="h-3.5 w-3.5" /> :
+                 isCompleted ? <Check className="h-3.5 w-3.5" /> :
+                 isCurrent ? <ArrowRight className="h-3.5 w-3.5" /> :
+                 <span>{i + 1}</span>}
+              </div>
+              {i < flowNodes.length - 1 && (
+                <div className={`w-0.5 h-8 ${isCompleted ? "bg-emerald-300" : "bg-slate-200"}`} />
+              )}
+            </div>
+            {/* 节点内容 */}
+            <div className="flex-1 pb-4">
+              <div className="flex items-center gap-2">
+                <span className={`text-xs font-semibold ${isCurrent ? "text-blue-700" : isCompleted ? "text-emerald-700" : "text-slate-500"}`}>
+                  {node.name}
+                </span>
+                <span className="text-[10px] text-slate-400">审批人: {node.approver}</span>
+              </div>
+              {submitRecord && i === 0 && (
+                <div className="mt-1 text-[10px] text-slate-500">
+                  <span className="text-slate-400">{submitRecord.approver}</span> 提交于 {fmtDateTime(submitRecord.created_at)}
+                  {submitRecord.comment && <span className="ml-1 text-slate-400">· "{submitRecord.comment}"</span>}
+                </div>
+              )}
+              {record && (
+                <div className="mt-1 text-[10px]">
+                  <span className={record.action === "通过" ? "text-emerald-600" : record.action === "驳回" ? "text-rose-600" : "text-slate-600"}>
+                    {record.approver} {record.action}
+                  </span>
+                  <span className="text-slate-400 ml-1">{fmtDateTime(record.created_at)}</span>
+                  {record.comment && <span className="ml-1 text-slate-400">· "{record.comment}"</span>}
+                </div>
+              )}
+              {isCurrent && !record && (
+                <div className="mt-1 text-[10px] text-blue-500">等待审批…</div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── 分红审批详情 ───
+function DividendDetail({ req }: { req: any }) {
+  const { data: dividendPreview, isLoading } = useQuery({
+    queryKey: ["dividendPreview", req.station_id, req.dividend_period],
+    queryFn: async () => {
+      try {
+        return await calculateDividend({ stationId: req.station_id, period: req.dividend_period });
+      } catch {
+        return null;
+      }
+    },
+    enabled: !!req.station_id && !!req.dividend_period,
+  });
+
+  if (isLoading) return <div className="py-4 text-center text-xs text-slate-400">加载分红数据中…</div>;
+
+  return (
+    <div className="space-y-3">
+      {/* 基本信息 */}
+      <div className="grid grid-cols-4 gap-3">
+        <div className="rounded-lg border bg-slate-50 px-3 py-2">
+          <div className="text-[10px] text-slate-400">站点</div>
+          <div className="text-xs font-semibold text-slate-700">{req.station_name || `站点#${req.station_id}`}</div>
+        </div>
+        <div className="rounded-lg border bg-slate-50 px-3 py-2">
+          <div className="text-[10px] text-slate-400">分红月份</div>
+          <div className="text-xs font-semibold text-slate-700">{req.dividend_period}</div>
+        </div>
+        <div className="rounded-lg border bg-blue-50 px-3 py-2">
+          <div className="text-[10px] text-blue-500">分红金额</div>
+          <div className="text-xs font-semibold text-blue-700 tabular-nums">{fmtMoney(req.amount)}</div>
+        </div>
+        <div className="rounded-lg border bg-slate-50 px-3 py-2">
+          <div className="text-[10px] text-slate-400">分红对象</div>
+          <div className="text-xs font-semibold text-slate-700">
+            {dividendPreview ? (
+              <div className="space-y-0.5">
+                {dividendPreview.shareholderDividends?.map((d: any, i: number) => (
+                  <div key={i} className="flex items-center gap-1">
+                    <span className="inline-block rounded-full bg-blue-100 px-1.5 py-0.5 text-[9px] text-blue-700">股东</span>
+                    <span>{d.shareholderName} <span className="text-blue-600 tabular-nums">{fmtMoney(d.amount)}</span></span>
+                  </div>
+                ))}
+                {dividendPreview.bizDividends?.map((d: any, i: number) => (
+                  <div key={i} className="flex items-center gap-1">
+                    <span className="inline-block rounded-full bg-purple-100 px-1.5 py-0.5 text-[9px] text-purple-700">商务</span>
+                    <span>{d.introducerName} <span className="text-purple-600 tabular-nums">{fmtMoney(d.amount)}</span></span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <span className="text-slate-400">-</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 经营数据明细 */}
+      {dividendPreview && (
+        <>
+          {/* 收入构成 */}
+          <div className="rounded-lg border bg-white overflow-hidden">
+            <div className="px-3 py-1.5 text-[11px] font-semibold text-emerald-600 bg-emerald-50/50 border-b">收入构成</div>
+            <div className="p-3">
+              <table className="w-full text-xs">
+                <tbody>
+                  <tr className="border-b">
+                    <td className="py-1 text-slate-500">电费收入</td>
+                    <td className="py-1 text-right tabular-nums text-slate-700">{fmtMoney(dividendPreview.income?.elecIncome?.total || 0)}</td>
+                  </tr>
+                  {dividendPreview.income?.elecIncome?.details?.map((d: any, i: number) => (
+                    <tr key={i} className="text-[10px]">
+                      <td className="py-0.5 pl-4 text-slate-400">{d.meterNo}（{d.brandName}）{d.kwh}度 × {d.unitPrice}元/度</td>
+                      <td className="py-0.5 text-right tabular-nums text-slate-500">{fmtMoney(d.amount)}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-b">
+                    <td className="py-1 text-slate-500">租金收入（品牌方合同）</td>
+                    <td className="py-1 text-right tabular-nums text-slate-700">{fmtMoney(dividendPreview.income?.rentIncome?.total || 0)}</td>
+                  </tr>
+                  {dividendPreview.income?.rentIncome?.details?.map((d: any, i: number) => (
+                    <tr key={i} className="text-[10px]">
+                      <td className="py-0.5 pl-4 text-slate-400">{d.brandName} {d.cabinets}柜 × {fmtMoney(d.unitMonthlyRent)}/柜</td>
+                      <td className="py-0.5 text-right tabular-nums text-slate-500">{fmtMoney(d.amount)}</td>
+                    </tr>
+                  ))}
+                  <tr className="font-semibold">
+                    <td className="py-1 text-slate-700">总收入</td>
+                    <td className="py-1 text-right tabular-nums text-emerald-600">{fmtMoney(dividendPreview.income?.totalIncome || 0)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* 成本构成 */}
+          <div className="rounded-lg border bg-white overflow-hidden">
+            <div className="px-3 py-1.5 text-[11px] font-semibold text-rose-600 bg-rose-50/50 border-b">成本构成</div>
+            <div className="p-3">
+              <table className="w-full text-xs">
+                <tbody>
+                  <tr className="border-b">
+                    <td className="py-1 text-slate-500">电费成本</td>
+                    <td className="py-1 text-right tabular-nums text-slate-700">{fmtMoney(dividendPreview.cost?.elecCost || 0)}</td>
+                  </tr>
+                  {dividendPreview.cost?.details?.electricity?.map((d: any, i: number) => (
+                    <tr key={i} className="text-[10px]">
+                      <td className="py-0.5 pl-4 text-slate-400">{d.meterNo} {d.kwh}度 × {d.unitPrice}元/度</td>
+                      <td className="py-0.5 text-right tabular-nums text-slate-500">{fmtMoney(d.amount)}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-b">
+                    <td className="py-1 text-slate-500">场地租金</td>
+                    <td className="py-1 text-right tabular-nums text-slate-700">{fmtMoney(dividendPreview.cost?.rentCost || 0)}</td>
+                  </tr>
+                  {dividendPreview.cost?.details?.rent?.map((d: any, i: number) => (
+                    <tr key={i} className="text-[10px]">
+                      <td className="py-0.5 pl-4 text-slate-400">{d.landlordName}</td>
+                      <td className="py-0.5 text-right tabular-nums text-slate-500">{fmtMoney(d.monthlyRent)}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-b">
+                    <td className="py-1 text-slate-500">运营费用</td>
+                    <td className="py-1 text-right tabular-nums text-slate-700">{fmtMoney(dividendPreview.cost?.opExpense || 0)}</td>
+                  </tr>
+                  {dividendPreview.cost?.bizDividendCost > 0 && (
+                    <tr className="border-b">
+                      <td className="py-1 text-slate-500">商务分红（计入成本）</td>
+                      <td className="py-1 text-right tabular-nums text-slate-700">{fmtMoney(dividendPreview.cost.bizDividendCost)}</td>
+                    </tr>
+                  )}
+                  <tr className="font-semibold">
+                    <td className="py-1 text-slate-700">总成本</td>
+                    <td className="py-1 text-right tabular-nums text-rose-600">{fmtMoney(dividendPreview.cost?.totalCost || 0)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* 利润与分红明细 */}
+          <div className="rounded-lg border bg-white overflow-hidden">
+            <div className="px-3 py-1.5 text-[11px] font-semibold text-blue-600 bg-blue-50/50 border-b">分红明细</div>
+            <div className="p-3 space-y-2">
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">净利润</span>
+                <span className={`font-semibold tabular-nums ${(dividendPreview.profit || 0) >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{fmtMoney(dividendPreview.profit || 0)}</span>
+              </div>
+
+              {dividendPreview.shareholderDividends?.length > 0 && (
+                <div className="border-t pt-2">
+                  <div className="text-[10px] font-semibold text-slate-500 mb-1">股东分红：</div>
+                  {dividendPreview.shareholderDividends.map((d: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between text-[11px] py-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-600">{d.shareholderName}</span>
+                        <span className="text-[10px] text-slate-400">
+                          {d.mode === "收入分红" ? `总收入 × ${(d.ratio * 100).toFixed(1)}%` :
+                           d.mode === "利润分红" ? `净利润 × ${(d.ratio * 100).toFixed(1)}%` :
+                           `固定 ${fmtMoney(d.fixedAmount)}`}
+                        </span>
+                      </div>
+                      <span className="font-medium tabular-nums text-blue-600">{fmtMoney(d.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {dividendPreview.bizDividends?.length > 0 && (
+                <div className="border-t pt-2">
+                  <div className="text-[10px] font-semibold text-slate-500 mb-1">商务分红：</div>
+                  {dividendPreview.bizDividends.map((d: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between text-[11px] py-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-600">{d.introducerName}</span>
+                        <span className="text-[10px] text-slate-400">
+                          {d.mode === "收入分红" ? `总收入 × ${(d.ratio * 100).toFixed(1)}%` :
+                           d.mode === "利润分红" ? `净利润 × ${(d.ratio * 100).toFixed(1)}%` :
+                           `固定 ${fmtMoney(d.fixedAmount)}`}
+                          {d.countAsCost && " · 计入成本"}
+                        </span>
+                      </div>
+                      <span className="font-medium tabular-nums text-purple-600">{fmtMoney(d.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {!dividendPreview && (
+        <div className="rounded-lg border bg-slate-50 p-4 text-center text-xs text-slate-400">
+          无法加载分红计算明细
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── 审批详情展开内容 ───
+function ApprovalDetail({ req }: { req: any }) {
+  const { data: detail, isLoading } = useQuery({
+    queryKey: ["approvalDetail", req.id],
+    queryFn: () => getApproval(req.id),
+    enabled: !!req.id,
+  });
+
+  if (isLoading) return <div className="py-4 text-center text-xs text-slate-400">加载中…</div>;
+
+  const flowNodes = detail?.flow_nodes || req.flow_nodes || [];
+  const records = detail?.records || req.records || [];
+
+  return (
+    <div className="space-y-4">
+      {/* 基本信息 */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div className="rounded-lg border bg-white px-3 py-2">
+          <div className="text-[10px] text-slate-400">审批编号</div>
+          <div className="text-xs font-semibold text-slate-700">AP-{String(req.id).padStart(5, "0")}</div>
+        </div>
+        <div className="rounded-lg border bg-white px-3 py-2">
+          <div className="text-[10px] text-slate-400">业务类型</div>
+          <div className="text-xs font-semibold text-slate-700">{req.biz_type}</div>
+        </div>
+        <div className="rounded-lg border bg-white px-3 py-2">
+          <div className="text-[10px] text-slate-400">申请人</div>
+          <div className="text-xs font-semibold text-slate-700">{req.applicant}</div>
+        </div>
+        <div className="rounded-lg border bg-white px-3 py-2">
+          <div className="text-[10px] text-slate-400">申请时间</div>
+          <div className="text-xs font-semibold text-slate-700">{fmtDateTime(req.created_at)}</div>
+        </div>
+        {req.amount && (
+          <div className="rounded-lg border bg-blue-50 px-3 py-2">
+            <div className="text-[10px] text-blue-500">审批金额</div>
+            <div className="text-sm font-bold text-blue-700 tabular-nums">{fmtMoney(req.amount)}</div>
+          </div>
+        )}
+        <div className="rounded-lg border bg-white px-3 py-2 col-span-2">
+          <div className="text-[10px] text-slate-400">审批事由</div>
+          <div className="text-xs font-medium text-slate-700">{req.title}</div>
+        </div>
+        {req.reason && (
+          <div className="rounded-lg border bg-white px-3 py-2 col-span-2">
+            <div className="text-[10px] text-slate-400">事由说明</div>
+            <div className="text-xs text-slate-600">{req.reason}</div>
+          </div>
+        )}
+      </div>
+
+      {/* 分红审批特有详情 */}
+      {req.biz_type === "分红审批" && req.dividend_record_id && (
+        <DividendDetail req={req} />
+      )}
+
+      {/* 审批流程 */}
+      <div className="rounded-lg border bg-white overflow-hidden">
+        <div className="px-3 py-1.5 text-[11px] font-semibold text-slate-600 bg-slate-50 border-b">审批流程</div>
+        <div className="p-3">
+          <FlowTimeline flowNodes={flowNodes} records={records} status={req.status} currentNode={req.current_node} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── 主页面 ───
 export default function Approvals() {
   const [tab, setTab] = useState<"submit" | "todo" | "ledger">("todo");
+  const [expandedId, setExpandedId] = useState<number | null>(null);
   const queryClient = useQueryClient();
 
   const stats = useQuery({ queryKey: ["approvalStats"], queryFn: getApprovalStats });
@@ -143,38 +476,60 @@ export default function Approvals() {
     <div className="overflow-x-auto rounded-xl border bg-white shadow-sm">
       <table className="w-full min-w-[1000px] text-xs">
         <thead><tr className="border-b bg-slate-50 text-left text-slate-500">
+          <th className="px-3 py-2.5 font-medium w-8"></th>
           <th className="px-3 py-2.5 font-medium">编号</th><th className="px-3 py-2.5 font-medium">类型</th>
           <th className="px-3 py-2.5 font-medium">审批事由</th><th className="px-3 py-2.5 text-right font-medium">金额</th>
           <th className="px-3 py-2.5 font-medium">申请人</th><th className="px-3 py-2.5 font-medium">申请时间</th>
           <th className="px-3 py-2.5 font-medium">状态</th><th className="px-3 py-2.5 text-center font-medium">操作</th>
         </tr></thead>
         <tbody>
-          {rows.map((r: any) => (
-            <tr key={r.id} className="border-b last:border-0 hover:bg-slate-50/60">
-              <td className="px-3 py-2.5 tabular-nums text-slate-400">AP-{String(r.id).padStart(5, "0")}</td>
-              <td className="px-3 py-2.5">{r.biz_type}</td>
-              <td className="max-w-[220px] truncate px-3 py-2.5 font-medium" title={r.title}>{r.title}</td>
-              <td className="px-3 py-2.5 text-right"><Money v={r.amount} /></td>
-              <td className="px-3 py-2.5">{r.applicant}</td>
-              <td className="px-3 py-2.5 text-slate-500">{fmtDateTime(r.created_at)}</td>
-              <td className="px-3 py-2.5"><StatusBadge status={r.status} /></td>
-              <td className="px-3 py-2.5">
-                <div className="flex flex-wrap justify-center gap-1">
-                  {actionable && r.status === "审批中" && (
-                    <>
-                      <Button size="sm" className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700" onClick={() => setActState({ req: r, action: "通过" })}>通过</Button>
-                      <Button size="sm" variant="outline" className="h-7 px-2 text-xs text-rose-600" onClick={() => setActState({ req: r, action: "驳回" })}>驳回</Button>
-                      <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-amber-600" title="催办"
-                        onClick={() => urge.mutate({ requestId: r.id, action: "催办", approver: operator || "系统" })}>
-                        <Bell className="h-3.5 w-3.5" />
-                      </Button>
-                    </>
-                  )}
-                </div>
-              </td>
-            </tr>
-          ))}
-          {rows.length === 0 && <tr><td colSpan={8} className="py-14 text-center text-slate-400">暂无审批单</td></tr>}
+          {rows.map((r: any) => {
+            const isExpanded = expandedId === r.id;
+            return (
+              <>
+                <tr key={r.id} className={`border-b hover:bg-slate-50/60 cursor-pointer ${isExpanded ? "bg-blue-50/30" : ""}`}
+                  onClick={() => setExpandedId(isExpanded ? null : r.id)}>
+                  <td className="px-3 py-2.5 text-center">
+                    {isExpanded ? <ChevronDown className="h-3.5 w-3.5 text-slate-400" /> : <ChevronRight className="h-3.5 w-3.5 text-slate-300" />}
+                  </td>
+                  <td className="px-3 py-2.5 tabular-nums text-slate-400">AP-{String(r.id).padStart(5, "0")}</td>
+                  <td className="px-3 py-2.5">
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] ${r.biz_type === "分红审批" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-600"}`}>{r.biz_type}</span>
+                  </td>
+                  <td className="max-w-[220px] truncate px-3 py-2.5 font-medium" title={r.title}>
+                    {r.title}
+                    {r.station_name && <span className="ml-1 text-[10px] text-slate-400">({r.station_name})</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-right"><Money v={r.amount} /></td>
+                  <td className="px-3 py-2.5">{r.applicant}</td>
+                  <td className="px-3 py-2.5 text-slate-500">{fmtDateTime(r.created_at)}</td>
+                  <td className="px-3 py-2.5"><StatusBadge status={r.status} /></td>
+                  <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex flex-wrap justify-center gap-1">
+                      {actionable && r.status === "审批中" && (
+                        <>
+                          <Button size="sm" className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700" onClick={() => setActState({ req: r, action: "通过" })}>通过</Button>
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs text-rose-600" onClick={() => setActState({ req: r, action: "驳回" })}>驳回</Button>
+                          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-amber-600" title="催办"
+                            onClick={() => urge.mutate({ requestId: r.id, action: "催办", approver: operator || "系统" })}>
+                            <Bell className="h-3.5 w-3.5" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+                {isExpanded && (
+                  <tr>
+                    <td colSpan={9} className="bg-slate-50/30 px-6 py-4">
+                      <ApprovalDetail req={r} />
+                    </td>
+                  </tr>
+                )}
+              </>
+            );
+          })}
+          {rows.length === 0 && <tr><td colSpan={9} className="py-14 text-center text-slate-400">暂无审批单</td></tr>}
         </tbody>
       </table>
     </div>

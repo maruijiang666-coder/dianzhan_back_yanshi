@@ -46,6 +46,8 @@ function StationMeterDetail({ stationId, period, onBack }: { stationId: number; 
   if (isLoading) return <div className="py-10 text-center text-slate-400">加载中…</div>;
   if (!mv) return <div className="py-10 text-center text-slate-400">加载失败</div>;
 
+  const s = mv.summary || {};
+
   return (
     <div className="space-y-3">
       {/* 返回按钮 + 站点名 */}
@@ -57,6 +59,28 @@ function StationMeterDetail({ stationId, period, onBack }: { stationId: number; 
         <span className="text-sm font-semibold text-slate-800">{mv.stationName}</span>
         <span className="text-xs text-slate-400">· {period}</span>
       </div>
+
+      {/* 站点汇总数据 */}
+      {s.totalKwh != null && (
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+          <div className="rounded-lg border bg-white px-3 py-2">
+            <div className="text-[10px] text-slate-400">总度数</div>
+            <div className="text-sm font-semibold tabular-nums">{fmtNum(s.totalKwh)} <span className="text-[10px] font-normal text-slate-400">度</span></div>
+          </div>
+          <div className="rounded-lg border bg-white px-3 py-2">
+            <div className="text-[10px] text-slate-400">总电费成本</div>
+            <div className="text-sm font-semibold tabular-nums text-rose-600">{fmtMoney(s.totalPayAmount)}</div>
+          </div>
+          <div className="rounded-lg border bg-white px-3 py-2">
+            <div className="text-[10px] text-slate-400">总电费收入</div>
+            <div className="text-sm font-semibold tabular-nums text-emerald-600">{fmtMoney(s.totalCollectNet)}</div>
+          </div>
+          <div className="rounded-lg border bg-white px-3 py-2">
+            <div className="text-[10px] text-slate-400">总电费利润</div>
+            <div className={`text-sm font-semibold tabular-nums ${s.totalElecProfit >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{fmtMoney(s.totalElecProfit)}</div>
+          </div>
+        </div>
+      )}
 
       {mv.brandGroups && mv.brandGroups.length === 0 && (
         <div className="rounded-lg border border-dashed py-8 text-center text-sm text-slate-400">
@@ -237,16 +261,161 @@ function StationMeterDetail({ stationId, period, onBack }: { stationId: number; 
 }
 
 // ─── 展开行详情组件 ───
-function ExpandedDetail({ landlordId, meters, stations, period }: { landlordId: number; meters: any[]; stations: any[]; period: string }) {
+function ExpandedDetail({ landlordId, meters, stations, period, summary }: { landlordId: number; meters: any[]; stations: any[]; period: string; summary?: any }) {
   const [selectedStationId, setSelectedStationId] = useState<number | null>(null);
+  const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
 
   // 如果选了站点，显示站点详情
   if (selectedStationId !== null) {
     return <StationMeterDetail stationId={selectedStationId} period={period} onBack={() => setSelectedStationId(null)} />;
   }
 
+  const toggleMetric = (key: string) => {
+    setExpandedMetric(prev => prev === key ? null : key);
+  };
+
+  const breakdown = summary?.stationBreakdown || [];
+  const contractBreakdown = summary?.contractBreakdown || [];
+
   return (
     <div className="space-y-4 text-sm">
+      {/* 场地总览 */}
+      {summary && (
+        <>
+          <div className="grid grid-cols-2 gap-2 lg:grid-cols-6">
+            <button onClick={() => toggleMetric("kwh")} className={`rounded-lg border bg-white px-3 py-2 text-left transition-colors hover:border-emerald-400 ${expandedMetric === "kwh" ? "border-emerald-500 ring-1 ring-emerald-500" : ""}`}>
+              <div className="text-[10px] text-slate-400">总度数</div>
+              <div className="text-sm font-semibold tabular-nums">{fmtNum(summary.totalKwh || 0)} <span className="text-[10px] font-normal text-slate-400">度</span></div>
+            </button>
+            <button onClick={() => toggleMetric("elecPay")} className={`rounded-lg border bg-white px-3 py-2 text-left transition-colors hover:border-emerald-400 ${expandedMetric === "elecPay" ? "border-emerald-500 ring-1 ring-emerald-500" : ""}`}>
+              <div className="text-[10px] text-slate-400">电费成本</div>
+              <div className="text-sm font-semibold tabular-nums text-rose-600">{fmtMoney(summary.elecPay)}</div>
+            </button>
+            <button onClick={() => toggleMetric("elecCollect")} className={`rounded-lg border bg-white px-3 py-2 text-left transition-colors hover:border-emerald-400 ${expandedMetric === "elecCollect" ? "border-emerald-500 ring-1 ring-emerald-500" : ""}`}>
+              <div className="text-[10px] text-slate-400">电费收入</div>
+              <div className="text-sm font-semibold tabular-nums text-emerald-600">{fmtMoney(summary.elecCollect)}</div>
+            </button>
+            <button onClick={() => toggleMetric("elecProfit")} className={`rounded-lg border bg-white px-3 py-2 text-left transition-colors hover:border-emerald-400 ${expandedMetric === "elecProfit" ? "border-emerald-500 ring-1 ring-emerald-500" : ""}`}>
+              <div className="text-[10px] text-slate-400">电费利润</div>
+              <div className={`text-sm font-semibold tabular-nums ${summary.elecProfit >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{fmtMoney(summary.elecProfit)}</div>
+            </button>
+            <button onClick={() => toggleMetric("rentCost")} className={`rounded-lg border bg-white px-3 py-2 text-left transition-colors hover:border-emerald-400 ${expandedMetric === "rentCost" ? "border-emerald-500 ring-1 ring-emerald-500" : ""}`}>
+              <div className="text-[10px] text-slate-400">场地成本</div>
+              <div className="text-sm font-semibold tabular-nums text-rose-600">{fmtMoney(summary.rentCost)}</div>
+            </button>
+            <button onClick={() => toggleMetric("rentProfit")} className={`rounded-lg border bg-white px-3 py-2 text-left transition-colors hover:border-emerald-400 ${expandedMetric === "rentProfit" ? "border-emerald-500 ring-1 ring-emerald-500" : ""}`}>
+              <div className="text-[10px] text-slate-400">场地利润</div>
+              <div className={`text-sm font-semibold tabular-nums ${summary.rentProfit >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{fmtMoney(summary.rentProfit)}</div>
+            </button>
+          </div>
+
+          {/* 场地成本/利润拆分详情 */}
+          {expandedMetric === "rentCost" && contractBreakdown.filter((c: any) => c.type === "场地合同").length > 0 && (
+            <div className="rounded-lg border bg-white p-3">
+              <div className="mb-2 text-xs font-semibold text-slate-600">场地成本构成</div>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b bg-slate-50">
+                    <th className="px-2.5 py-1.5 text-left font-medium text-slate-500">场地方</th>
+                    <th className="px-2.5 py-1.5 text-right font-medium text-slate-500">场地月租金</th>
+                    <th className="px-2.5 py-1.5 text-right font-medium text-slate-500">电费单价</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {contractBreakdown.filter((c: any) => c.type === "场地合同").map((c: any) => (
+                    <tr key={c.id} className="border-b last:border-0">
+                      <td className="px-2.5 py-1.5 font-medium">{c.partner || "-"}</td>
+                      <td className="px-2.5 py-1.5 text-right tabular-nums text-rose-600">{c.monthlyRent ? fmtMoney(c.monthlyRent) : "-"}</td>
+                      <td className="px-2.5 py-1.5 text-right tabular-nums">{c.elecPrice ? `${fmtNum(c.elecPrice)} 元/度` : "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {expandedMetric === "rentProfit" && contractBreakdown.length > 0 && (
+            <div className="rounded-lg border bg-white p-3">
+              <div className="mb-2 text-xs font-semibold text-slate-600">场地利润构成</div>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b bg-slate-50">
+                    <th className="px-2.5 py-1.5 text-left font-medium text-slate-500">合同类型</th>
+                    <th className="px-2.5 py-1.5 text-left font-medium text-slate-500">合作方/品牌方</th>
+                    <th className="px-2.5 py-1.5 text-right font-medium text-slate-500">场地月租金</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {contractBreakdown.map((c: any) => (
+                    <tr key={c.id} className="border-b last:border-0">
+                      <td className="px-2.5 py-1.5">
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] ${c.type === "场地合同" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                          {c.type}
+                        </span>
+                      </td>
+                      <td className="px-2.5 py-1.5 font-medium">{c.partner || "-"}</td>
+                      <td className={`px-2.5 py-1.5 text-right tabular-nums ${c.type === "场地合同" ? "text-rose-600" : "text-emerald-600"}`}>{c.monthlyRent ? fmtMoney(c.monthlyRent) : "-"}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-t bg-slate-50 font-medium">
+                    <td colSpan={2} className="px-2.5 py-1.5">场地利润</td>
+                    <td className={`px-2.5 py-1.5 text-right tabular-nums ${(summary?.rentProfit || 0) >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{fmtMoney(summary?.rentProfit)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {expandedMetric && expandedMetric !== "rentCost" && expandedMetric !== "rentProfit" && breakdown.length > 0 && (
+
+            <div className="rounded-lg border bg-white p-3">
+              <div className="mb-2 text-xs font-semibold text-slate-600">
+                {expandedMetric === "kwh" && "各站点用电量"}
+                {expandedMetric === "elecPay" && "各站点电费成本"}
+                {expandedMetric === "elecCollect" && "各站点电费收入"}
+                {expandedMetric === "elecProfit" && "各站点电费利润"}
+              </div>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b bg-slate-50">
+                    <th className="px-2.5 py-1.5 text-left font-medium text-slate-500">站点</th>
+                    <th className="px-2.5 py-1.5 text-right font-medium text-slate-500">电表数</th>
+                    <th className="px-2.5 py-1.5 text-right font-medium text-slate-500">用电量（度）</th>
+                    {(expandedMetric === "elecPay" || expandedMetric === "elecProfit") && (
+                      <th className="px-2.5 py-1.5 text-right font-medium text-slate-500">电费成本</th>
+                    )}
+                    {(expandedMetric === "elecCollect" || expandedMetric === "elecProfit") && (
+                      <th className="px-2.5 py-1.5 text-right font-medium text-slate-500">电费收入</th>
+                    )}
+                    {expandedMetric === "elecProfit" && (
+                      <th className="px-2.5 py-1.5 text-right font-medium text-slate-500">电费利润</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {breakdown.map((sb: any) => (
+                    <tr key={sb.station_id} className="border-b last:border-0">
+                      <td className="px-2.5 py-1.5 font-medium">{sb.station_name || "未分配站点"}</td>
+                      <td className="px-2.5 py-1.5 text-right tabular-nums">{sb.meter_count}</td>
+                      <td className="px-2.5 py-1.5 text-right tabular-nums">{fmtNum(sb.kwh)}</td>
+                      {(expandedMetric === "elecPay" || expandedMetric === "elecProfit") && (
+                        <td className="px-2.5 py-1.5 text-right tabular-nums text-rose-600">{fmtMoney(sb.elecPay)}</td>
+                      )}
+                      {(expandedMetric === "elecCollect" || expandedMetric === "elecProfit") && (
+                        <td className="px-2.5 py-1.5 text-right tabular-nums text-emerald-600">{fmtMoney(sb.elecCollect)}</td>
+                      )}
+                      {expandedMetric === "elecProfit" && (
+                        <td className={`px-2.5 py-1.5 text-right tabular-nums font-medium ${sb.elecProfit >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{fmtMoney(sb.elecProfit)}</td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+
       {/* 站点列表 */}
       {stations.length > 0 && (
         <div>
@@ -394,7 +563,7 @@ export default function Stations() {
                   {isExpanded && (
                     <tr key={`${r.landlord.id}-expanded`}>
                       <td colSpan={11} className="border-b bg-white px-6 py-4">
-                        <ExpandedDetail landlordId={r.landlord.id} meters={r.meters} stations={r.stations} period={selectedMonth} />
+                        <ExpandedDetail landlordId={r.landlord.id} meters={r.meters} stations={r.stations} period={selectedMonth} summary={{ totalKwh: r.totalKwh, elecPay: r.elecPay, elecCollect: r.elecCollect, elecProfit: r.elecProfit, rentCost: r.rentCost, rentIncome: r.rentIncome, rentProfit: r.rentProfit, stationBreakdown: r.stationBreakdown, contractBreakdown: r.contractBreakdown }} />
                       </td>
                     </tr>
                   )}

@@ -258,6 +258,40 @@ async def get_station_meter_view(station_id: int, period: str = None):
             "meters": group_meters,
         })
 
+    # 计算汇总数据
+    total_pay_amount = 0      # 总电费成本（付款）
+    total_collect_amount = 0  # 总电费收入（收款·含税）
+    total_collect_net = 0     # 总电费收入（收款·不含税）
+    total_kwh = 0             # 总度数
+    total_elec_profit = 0     # 总电费利润
+    total_rent_cost = 0       # 总场地成本（场地合同月租金）
+    total_rent_income = 0     # 总场地收入（品牌方合同月租金）
+    total_rent_profit = 0     # 总场地利润
+
+    for group in result_groups:
+        for meter in group.get("meters", []):
+            if meter.get("payAmount"):
+                total_pay_amount += float(meter["payAmount"])
+            if meter.get("collectAmount"):
+                total_collect_amount += float(meter["collectAmount"])
+            if meter.get("collectNet"):
+                total_collect_net += float(meter["collectNet"])
+            if meter.get("payKwh"):
+                total_kwh += float(meter["payKwh"])
+
+    # 场地成本（场地合同月租金）
+    for c in contract_rent.get("cost", []):
+        if c.get("monthlyRent"):
+            total_rent_cost += float(c["monthlyRent"])
+
+    # 场地收入（品牌方合同月租金）
+    for c in contract_rent.get("income", []):
+        if c.get("monthlyRent"):
+            total_rent_income += float(c["monthlyRent"])
+
+    total_elec_profit = total_collect_net - total_pay_amount
+    total_rent_profit = total_rent_income - total_rent_cost
+
     return {
         "stationId": station_id,
         "stationName": station.get("name"),
@@ -266,6 +300,16 @@ async def get_station_meter_view(station_id: int, period: str = None):
         "leases": leases,
         "elecRecord": elec_record,
         "contractRent": contract_rent,
+        "summary": {
+            "totalKwh": total_kwh,
+            "totalPayAmount": total_pay_amount,
+            "totalCollectAmount": total_collect_amount,
+            "totalCollectNet": total_collect_net,
+            "totalElecProfit": total_elec_profit,
+            "totalRentCost": total_rent_cost,
+            "totalRentIncome": total_rent_income,
+            "totalRentProfit": total_rent_profit,
+        },
     }
 
 

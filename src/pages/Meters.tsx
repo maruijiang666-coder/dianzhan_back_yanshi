@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listMeters, createMeter, updateMeter, deleteMeter, getMeter } from "@/api/meters";
 import { listCabinets, createCabinet, updateCabinet, deleteCabinet } from "@/api/cabinets";
 import { listStations } from "@/api/stations";
-import { listBrands, listLandlords } from "@/api/directory";
+import { listBrands, listLandlords, listEntities } from "@/api/directory";
 import { triggerSync } from "@/api/meterEnergy";
 import { StatusBadge } from "@/components/Stat";
 import { Button } from "@/components/ui/button";
@@ -453,12 +453,13 @@ function MeterCard({ meter, isExpanded, onToggle, onEdit, onDelete, highlightCab
 
 // ─── 电表表单 ───
 function MeterForm({ open, onClose, record }: { open: boolean; onClose: () => void; record?: any }) {
-  const blank = { stationId: "", brandId: "", landlordId: "", meterNo: "", meterName: "", collectorId: "", transformerRatio: "", remark: "" };
+  const blank = { stationId: "", brandId: "", landlordId: "", entityId: "", meterNo: "", meterName: "", collectorId: "", transformerRatio: "", remark: "" };
   const [f, setF] = useState(blank);
   const queryClient = useQueryClient();
   const stations = useQuery({ queryKey: ["stations"], queryFn: () => listStations(), enabled: open });
   const brands = useQuery({ queryKey: ["brands"], queryFn: listBrands, enabled: open });
   const landlords = useQuery({ queryKey: ["landlords"], queryFn: listLandlords, enabled: open });
+  const entities = useQuery({ queryKey: ["entities"], queryFn: listEntities, enabled: open });
 
   useEffect(() => {
     if (!open) return;
@@ -467,6 +468,7 @@ function MeterForm({ open, onClose, record }: { open: boolean; onClose: () => vo
         stationId: record.station_id ? String(record.station_id) : "",
         brandId: record.brand_id ? String(record.brand_id) : "",
         landlordId: record.landlord_id ? String(record.landlord_id) : "",
+        entityId: record.entity_id ? String(record.entity_id) : "",
         meterNo: record.meter_no ?? "", meterName: record.meter_name ?? "",
         collectorId: record.collector_id ?? "", transformerRatio: String(record.transformer_ratio ?? ""),
         remark: record.remark ?? "",
@@ -488,6 +490,7 @@ function MeterForm({ open, onClose, record }: { open: boolean; onClose: () => vo
       stationId: f.stationId ? Number(f.stationId) : null,
       brandId: f.brandId ? Number(f.brandId) : null,
       landlordId: f.landlordId ? Number(f.landlordId) : null,
+      entityId: f.entityId ? Number(f.entityId) : null,
       meterNo: f.meterNo.trim(),
       meterName: f.meterName.trim() || null,
       collectorId: f.collectorId.trim() || null,
@@ -508,6 +511,10 @@ function MeterForm({ open, onClose, record }: { open: boolean; onClose: () => vo
           <Field label="品牌方">
             <SelectInput value={f.brandId} onChange={set("brandId")}
               options={[{ value: "", label: "未指定" }, ...(brands.data ?? []).map((b: any) => ({ value: String(b.id), label: b.name }))]} />
+          </Field>
+          <Field label="报税公司主体">
+            <SelectInput value={f.entityId} onChange={set("entityId")}
+              options={[{ value: "", label: "未指定" }, ...(entities.data ?? []).map((e: any) => ({ value: String(e.id), label: e.name }))]} />
           </Field>
           <Field label="电表编号 *"><TextInput value={f.meterNo} onChange={set("meterNo")} /></Field>
           <Field label="电表名称"><TextInput value={f.meterName} onChange={set("meterName")} /></Field>

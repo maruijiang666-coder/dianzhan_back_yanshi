@@ -322,3 +322,127 @@ def delete_introducer(introducer_id: int):
     finally:
         cur.close()
         conn.close()
+
+
+# ─── 公司主体-品牌方关联 ─────────────────────────────────────
+
+def list_entity_brands(entity_id: int = None):
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        conditions, values = [], []
+        if entity_id:
+            conditions.append("eb.entity_id = %s"); values.append(entity_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cur.execute(f"""
+            SELECT eb.*, e.name as entity_name, e.short_name as entity_short_name,
+                   b.name as brand_name
+            FROM entity_brands eb
+            LEFT JOIN entities e ON eb.entity_id = e.id
+            LEFT JOIN brands b ON eb.brand_id = b.id
+            {where}
+            ORDER BY eb.entity_id, eb.brand_id
+        """, values)
+        return cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def create_entity_brand(entity_id: int, brand_id: int, remark: str = None):
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        cur.execute("""
+            INSERT INTO entity_brands (entity_id, brand_id, remark)
+            VALUES (%s, %s, %s)
+            RETURNING *
+        """, (entity_id, brand_id, remark))
+        conn.commit()
+        return cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def delete_entity_brand(id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM entity_brands WHERE id = %s", (id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ─── 平台使用人员 ────────────────────────────────────────────
+
+def list_platform_users():
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        cur.execute("""
+            SELECT pu.*, s.name as shareholder_name
+            FROM platform_users pu
+            LEFT JOIN shareholders s ON pu.shareholder_id = s.id
+            ORDER BY pu.id
+        """)
+        return cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def create_platform_user(name: str, role: str, shareholder_id: int = None, phone: str = None, remark: str = None):
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        cur.execute(
+            "INSERT INTO platform_users (name, role, shareholder_id, phone, remark) VALUES (%s, %s, %s, %s, %s) RETURNING *",
+            (name, role, shareholder_id, phone, remark)
+        )
+        conn.commit()
+        return cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def update_platform_user(user_id: int, name: str = None, role: str = None, shareholder_id: int = None, phone: str = None, remark: str = None):
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        updates, values = [], []
+        if name is not None:
+            updates.append("name = %s"); values.append(name)
+        if role is not None:
+            updates.append("role = %s"); values.append(role)
+        if shareholder_id is not None:
+            updates.append("shareholder_id = %s"); values.append(shareholder_id)
+        if phone is not None:
+            updates.append("phone = %s"); values.append(phone)
+        if remark is not None:
+            updates.append("remark = %s"); values.append(remark)
+        if not updates:
+            return None
+        values.append(user_id)
+        cur.execute(f"UPDATE platform_users SET {', '.join(updates)} WHERE id = %s RETURNING *", values)
+        conn.commit()
+        return cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def delete_platform_user(user_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM platform_users WHERE id = %s", (user_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        cur.close()
+        conn.close()

@@ -29,3 +29,17 @@ export const listIntroducers = () => client.get("/directory/introducers").then(r
 export const createIntroducer = (data: any) => client.post("/directory/introducers", data).then(r => r.data);
 export const updateIntroducer = (id: number, data: any) => client.put(`/directory/introducers/${id}`, data).then(r => r.data);
 export const deleteIntroducer = (id: number) => client.delete(`/directory/introducers/${id}`).then(r => r.data);
+
+// 公司主体-品牌方关联
+export const listEntityBrands = (params?: { entityId?: number }) =>
+  client.get("/directory/entity-brands", { params }).then(r => r.data);
+export const createEntityBrand = (data: any) =>
+  client.post("/directory/entity-brands", data).then(r => r.data);
+export const deleteEntityBrand = (id: number) =>
+  client.delete(`/directory/entity-brands/${id}`).then(r => r.data);
+
+// 平台使用人员
+export const listPlatformUsers = () => client.get("/directory/platform-users").then(r => r.data);
+export const createPlatformUser = (data: any) => client.post("/directory/platform-users", data).then(r => r.data);
+export const updatePlatformUser = (id: number, data: any) => client.put(`/directory/platform-users/${id}`, data).then(r => r.data);
+export const deletePlatformUser = (id: number) => client.delete(`/directory/platform-users/${id}`).then(r => r.data);

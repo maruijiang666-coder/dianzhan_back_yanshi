@@ -45,13 +45,20 @@ def list_requests(biz_type: str = None, status: str = None, applicant: str = Non
     try:
         conditions, values = [], []
         if biz_type:
-            conditions.append("biz_type = %s"); values.append(biz_type)
+            conditions.append("ar.biz_type = %s"); values.append(biz_type)
         if status:
-            conditions.append("status = %s"); values.append(status)
+            conditions.append("ar.status = %s"); values.append(status)
         if applicant:
-            conditions.append("applicant = %s"); values.append(applicant)
+            conditions.append("ar.applicant = %s"); values.append(applicant)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        cur.execute(f"SELECT * FROM approval_requests {where} ORDER BY created_at DESC", values)
+        cur.execute(f"""
+            SELECT ar.*, dr.period as dividend_period, dr.station_id, s.name as station_name
+            FROM approval_requests ar
+            LEFT JOIN dividend_records dr ON ar.dividend_record_id = dr.id
+            LEFT JOIN stations s ON dr.station_id = s.id
+            {where}
+            ORDER BY ar.created_at DESC
+        """, values)
         rows = cur.fetchall()
         for r in rows:
             if isinstance(r.get("flow_nodes"), str):
@@ -94,21 +101,25 @@ def create_request(data: dict):
     conn = get_connection()
     cur = get_dict_cursor(conn)
     try:
-        # 获取流程配置
-        cur.execute("SELECT nodes FROM approval_flows WHERE biz_type = %s", (data.get("bizType"),))
-        flow = cur.fetchone()
-        flow_nodes = json.loads(flow["nodes"]) if flow else [{"name": "经办人", "approver": data.get("applicant")}]
+        # 如果传入了自定义 flowNodes 则使用，否则从数据库获取
+        if data.get("flowNodes"):
+            flow_nodes = data["flowNodes"]
+        else:
+            cur.execute("SELECT nodes FROM approval_flows WHERE biz_type = %s", (data.get("bizType"),))
+            flow = cur.fetchone()
+            flow_nodes = json.loads(flow["nodes"]) if flow else [{"name": "经办人", "approver": data.get("applicant")}]
 
         cur.execute("""
             INSERT INTO approval_requests
-            (biz_type, title, reason, amount, applicant, attachments, flow_nodes, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, '审批中')
+            (biz_type, title, reason, amount, applicant, attachments, flow_nodes, status, dividend_record_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, '审批中', %s)
             RETURNING *
         """, (
             data.get("bizType"), data.get("title"), data.get("reason"),
             data.get("amount"), data.get("applicant"),
             json.dumps(data.get("attachments", []), ensure_ascii=False),
-            json.dumps(flow_nodes, ensure_ascii=False)
+            json.dumps(flow_nodes, ensure_ascii=False),
+            data.get("dividendRecordId"),
         ))
         request = cur.fetchone()
 
@@ -117,6 +128,13 @@ def create_request(data: dict):
             INSERT INTO approval_records (request_id, node_index, node_name, approver, action, comment)
             VALUES (%s, 0, %s, %s, '提交', %s)
         """, (request["id"], flow_nodes[0]["name"], data.get("applicant"), data.get("reason")))
+
+        # 关联回分红记录
+        if data.get("dividendRecordId"):
+            cur.execute(
+                "UPDATE dividend_records SET approval_id = %s WHERE id = %s",
+                (request["id"], data["dividendRecordId"])
+            )
 
         conn.commit()
         if isinstance(request.get("flow_nodes"), str):
@@ -147,6 +165,12 @@ def act_on_request(request_id: int, action: str, approver: str, comment: str = N
                     "UPDATE approval_requests SET current_node = %s, status = '已通过', finished_at = NOW() WHERE id = %s",
                     (next_node, request_id)
                 )
+                # 如果关联了分红记录，自动更新分红状态
+                if request.get("dividend_record_id"):
+                    cur.execute(
+                        "UPDATE dividend_records SET status = '已通过', updated_at = NOW() WHERE id = %s",
+                        (request["dividend_record_id"],)
+                    )
             else:
                 cur.execute(
                     "UPDATE approval_requests SET current_node = %s WHERE id = %s",
