@@ -149,6 +149,11 @@ async def generate_electricity(data: dict):
         cur.execute("SELECT address, kwh FROM meter_monthly WHERE month_period = %s", (period,))
         readings = {r["address"]: float(r["kwh"]) for r in cur.fetchall()}
 
+        import logging
+        logging.warning(f"[generate_electricity] period={period}, meters={len(meters)}, readings={len(readings)}")
+        for m in meters:
+            logging.warning(f"  meter: id={m['id']}, no={m['meter_no']}, station={m['station_id']}, has_reading={m['meter_no'] in readings}")
+
         # 3. 获取所有合同（按 landlord_id 分组）
         cur.execute("""
             SELECT c.*, l.name as landlord_name
@@ -173,14 +178,11 @@ async def generate_electricity(data: dict):
             station_meters[m["station_id"]].append(m)
 
         created = []
-        skipped = []
+        updated = []
 
         for station_id, station_meter_list in station_meters.items():
             # 检查是否已存在
             existing = electricity_repo.get_record_by_station_period(station_id, period)
-            if existing:
-                skipped.append(station_id)
-                continue
 
             # 通过 station → landlord_id → contracts 匹配
             st_info = station_info.get(station_id, {})
@@ -236,33 +238,42 @@ async def generate_electricity(data: dict):
 
             profit = round(total_collect_net - total_pay_amount, 2)
 
-            record = electricity_repo.create_record({
+            payload = {
                 "stationId": station_id,
                 "period": period,
                 "payKwh": round(total_pay_kwh, 2),
                 "payUnitPrice": float(landlord_price or 0),
                 "payAmount": total_pay_amount,
-                "payStatus": "未付款",
+                "payStatus": existing["pay_status"] if existing else "未付款",
                 "collectKwh": round(total_collect_kwh, 2),
                 "collectUnitPrice": float(brand_price or 0),
                 "collectAmount": total_collect_amount,
                 "taxRate": tax_rate,
                 "collectNet": total_collect_net,
-                "collectStatus": "未到账",
+                "collectStatus": existing["collect_status"] if existing else "未到账",
                 "profit": profit,
-            })
+            }
 
-            # 保存电表明细
-            for d in meter_details:
-                electricity_repo.create_meter_detail(record["id"], d["meterId"], d)
+            if existing:
+                # 更新已有记录，保留付款/到账状态
+                electricity_repo.update_record(existing["id"], payload)
+                electricity_repo.delete_meter_details(existing["id"])
+                for d in meter_details:
+                    electricity_repo.create_meter_detail(existing["id"], d["meterId"], d)
+                updated.append(station_id)
+            else:
+                record = electricity_repo.create_record(payload)
+                for d in meter_details:
+                    electricity_repo.create_meter_detail(record["id"], d["meterId"], d)
+                created.append(record["id"])
 
-            created.append(record["id"])
+        logging.warning(f"[generate_electricity] result: created={created}, updated={updated}")
 
         return {
             "created": len(created),
-            "skipped": len(skipped),
+            "updated": len(updated),
             "period": period,
-            "detail": f"生成 {len(created)} 条，跳过 {len(skipped)} 条（已存在）"
+            "detail": f"新增 {len(created)} 条，更新 {len(updated)} 条"
         }
     finally:
         cur.close()

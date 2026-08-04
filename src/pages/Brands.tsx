@@ -15,6 +15,10 @@ import { toast } from "sonner";
 export default function Brands() {
   const [keyword, setKeyword] = useState("");
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
 
   const brands = useQuery({ queryKey: ["brands"], queryFn: listBrands });
   const contracts = useQuery({ queryKey: ["contracts"], queryFn: () => listContracts() });
@@ -99,6 +103,7 @@ export default function Brands() {
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
           <input className={`${inputCls} w-56 pl-8`} placeholder="搜索品牌名称…" value={keyword} onChange={(e) => setKeyword(e.target.value)} />
         </div>
+        <input type="month" className={inputCls + " w-40"} value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} />
         <div className="ml-auto flex gap-2">
           <Button variant="outline" onClick={doExport}><Download className="mr-1.5 h-4 w-4" />导出表格</Button>
         </div>

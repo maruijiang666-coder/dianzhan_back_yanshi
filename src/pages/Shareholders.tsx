@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listShareholders, listIntroducers, listPlatformUsers } from "@/api/directory";
 import { getStationBoard } from "@/api/overview";
@@ -8,8 +8,9 @@ import { listExpenses, saveExpense, deleteExpense } from "@/api/rent";
 import { MonthPicker } from "@/components/MonthPicker";
 import { fmtMoney, fmtNum, fmtPct } from "@/lib/format";
 import { inputCls } from "@/components/fields";
-import { Users, MapPin, Plus, X, Trash2, UserPlus, Settings, DollarSign, ChevronDown, ChevronRight } from "lucide-react";
+import { Users, MapPin, Plus, X, Trash2, UserPlus, Settings, DollarSign, ChevronDown, ChevronRight, Download } from "lucide-react";
 import { toast } from "sonner";
+import * as XLSX from "xlsx";
 
 // ─── 新增股东弹窗 ───
 function AddShareholderDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -400,6 +401,47 @@ function SubmitApprovalDialog({ open, onClose, dividend, onSuccess }: { open: bo
   );
 }
 
+// ─── 导出日期范围弹窗 ───
+function ExportDateDialog({ open, onClose, onConfirm }: { open: boolean; onClose: () => void; onConfirm: (start: string, end: string) => void }) {
+  const [start, setStart] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-01`;
+  });
+  const [end, setEnd] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+      <div className="w-80 rounded-xl bg-white p-5 shadow-xl">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-slate-800">选择导出日期范围</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs text-slate-500">起始月份</label>
+            <input type="month" className={inputCls} value={start} onChange={e => setStart(e.target.value)} />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-500">截止月份</label>
+            <input type="month" className={inputCls} value={end} onChange={e => setEnd(e.target.value)} />
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-100">取消</button>
+          <button onClick={() => { if (start > end) { toast.error("起始月份不能大于截止月份"); return; } onConfirm(start, end); }} className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs text-white hover:bg-emerald-700">
+            确认导出
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── 主页面 ───
 export default function Shareholders() {
   const qc = useQueryClient();
@@ -415,6 +457,7 @@ export default function Shareholders() {
   const [configOpen, setConfigOpen] = useState<{ open: boolean; type: "shareholder" | "introducer"; stationId?: number }>({ open: false, type: "shareholder" });
   const [addDividendOpen, setAddDividendOpen] = useState<{ open: boolean; stationId?: number }>({ open: false });
   const [expandedShareholderId, setExpandedShareholderId] = useState<number | null>(null);
+  const [exportDateOpen, setExportDateOpen] = useState(false);
 
   // ─── 数据查询 ───
   const { data: shareholders } = useQuery({ queryKey: ["shareholders"], queryFn: () => listShareholders() });

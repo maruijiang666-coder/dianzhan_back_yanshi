@@ -62,7 +62,12 @@ async def get_meter(meter_id: int):
 
 @router.post("", status_code=201)
 async def create_meter(data: dict):
-    return meter_repo.create_meter(data)
+    try:
+        return meter_repo.create_meter(data)
+    except Exception as e:
+        import logging
+        logging.error(f"create_meter error: {e}, data={data}")
+        raise HTTPException(400, str(e))
 
 
 @router.put("/{meter_id}")

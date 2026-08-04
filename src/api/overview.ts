@@ -8,3 +8,9 @@ export const getStationBoard = (params?: { landlordId?: number; keyword?: string
 
 export const getShareholderBoard = () =>
   client.get("/overview/shareholder-board").then(r => r.data);
+
+export const getLandlordTrends = (landlordId: number, months: number = 6) =>
+  client.get("/overview/landlord-trends", { params: { landlordId, months } }).then(r => r.data);
+
+export const getLandlordStationMonthly = (landlordId: number, months: number = 6) =>
+  client.get("/overview/landlord-station-monthly", { params: { landlordId, months } }).then(r => r.data);

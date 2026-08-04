@@ -1,7 +1,7 @@
 from ..infra.database import get_connection, get_dict_cursor
 
 
-def list_stations(landlord_id: int = None, keyword: str = None):
+def list_stations(landlord_id: int = None, keyword: str = None, page: int = None, page_size: int = None):
     conn = get_connection()
     cur = get_dict_cursor(conn)
     try:
@@ -12,6 +12,17 @@ def list_stations(landlord_id: int = None, keyword: str = None):
             conditions.append("(s.name ILIKE %s OR s.code ILIKE %s)")
             values.extend([f"%{keyword}%", f"%{keyword}%"])
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        # 查询总数
+        cur.execute(f"SELECT COUNT(*) as total FROM stations s {where}", values)
+        total = cur.fetchone()["total"]
+
+        # 分页查询
+        pagination = ""
+        if page and page_size:
+            offset = (page - 1) * page_size
+            pagination = f"LIMIT {page_size} OFFSET {offset}"
+
         cur.execute(f"""
             SELECT s.*, l.name as landlord_name,
                    (SELECT COUNT(*) FROM meters m WHERE m.station_id = s.id) as meter_count
@@ -19,8 +30,21 @@ def list_stations(landlord_id: int = None, keyword: str = None):
             LEFT JOIN landlords l ON s.landlord_id = l.id
             {where}
             ORDER BY s.id
+            {pagination}
         """, values)
-        return cur.fetchall()
+        items = cur.fetchall()
+
+        # 如果有分页参数，返回分页格式
+        if page and page_size:
+            return {
+                "items": items,
+                "total": total,
+                "page": page,
+                "pageSize": page_size,
+                "totalPages": (total + page_size - 1) // page_size
+            }
+        # 无分页参数时返回原格式（兼容旧接口）
+        return items
     finally:
         cur.close()
         conn.close()

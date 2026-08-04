@@ -8,13 +8,15 @@ from pathlib import Path
 
 from .config import PORT
 from .infra.database import init_database
-from .api import directory, stations, meters, cabinets, electricity, rent, dividends, approvals, contracts, overview, meter_energy
+from .api import directory, stations, meters, cabinets, electricity, rent, dividends, approvals, contracts, overview, meter_energy, alerts
+from .api import mp_auth, mp_snapshot, mp_approvals, mp_finance
 from .jobs.scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 from .jobs.sync_meters import full_sync
 
+# ── 主应用（管理后台） ────────────────────────────────────────
 app = FastAPI(
     title="换电站管理平台 API",
-    description="换电站经营管理平台后端服务",
+    description="换电站经营管理平台后端服务（管理后台）",
     version="2.0.0",
 )
 
@@ -27,7 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 注册路由
+# 注册后台路由
 app.include_router(directory.router)
 app.include_router(stations.router)
 app.include_router(meters.router)
@@ -39,6 +41,22 @@ app.include_router(approvals.router)
 app.include_router(contracts.router)
 app.include_router(overview.router)
 app.include_router(meter_energy.router)
+app.include_router(alerts.router)
+
+# ── 小程序子应用 ──────────────────────────────────────────────
+mp_app = FastAPI(
+    title="换电站小程序 API",
+    description="换电站小程序端接口",
+    version="1.0.0",
+)
+
+mp_app.include_router(mp_auth.router)
+mp_app.include_router(mp_snapshot.router)
+mp_app.include_router(mp_approvals.router)
+mp_app.include_router(mp_finance.router)
+
+# 挂载到 /mp 路径，Swagger 文档地址: /mp/docs
+app.mount("/mp", mp_app)
 
 
 @app.get("/api/health")

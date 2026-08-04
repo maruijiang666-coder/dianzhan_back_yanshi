@@ -33,10 +33,14 @@ export function fmtDateTime(v: unknown, dash = "-"): string {
   return d.toLocaleString("zh-CN", { hour12: false });
 }
 
-export const numOrNull = (s: string): number | null => {
-  if (s.trim() === "") return null;
+export const numOrNull = (s: unknown): number | null => {
+  if (s === null || s === undefined || s === "") return null;
   const n = Number(s);
   return Number.isNaN(n) ? null : n;
 };
 
-export const strOrNull = (s: string): string | null => (s.trim() === "" ? null : s.trim());
+export const strOrNull = (s: unknown): string | null => {
+  if (s === null || s === undefined) return null;
+  const str = String(s).trim();
+  return str === "" ? null : str;
+};

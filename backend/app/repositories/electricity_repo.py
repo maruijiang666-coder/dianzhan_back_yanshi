@@ -12,12 +12,12 @@ def list_records(station_id: int = None, period: str = None):
             conditions.append("e.period = %s"); values.append(period)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cur.execute(f"""
-            SELECT e.*, s.name as station_name, l.name as landlord_name
+            SELECT e.*, s.name as station_name, s.landlord_id, l.name as landlord_name
             FROM electricity_records e
             LEFT JOIN stations s ON e.station_id = s.id
             LEFT JOIN landlords l ON s.landlord_id = l.id
             {where}
-            ORDER BY e.period DESC, s.id
+            ORDER BY l.name, e.period DESC, s.id
         """, values)
         return cur.fetchall()
     finally:
@@ -30,7 +30,7 @@ def get_record(record_id: int):
     cur = get_dict_cursor(conn)
     try:
         cur.execute("""
-            SELECT e.*, s.name as station_name, l.name as landlord_name
+            SELECT e.*, s.name as station_name, s.landlord_id, l.name as landlord_name
             FROM electricity_records e
             LEFT JOIN stations s ON e.station_id = s.id
             LEFT JOIN landlords l ON s.landlord_id = l.id

@@ -6,8 +6,8 @@ router = APIRouter(prefix="/api/stations", tags=["站点管理"])
 
 
 @router.get("")
-async def list_stations(landlordId: int = None, keyword: str = None):
-    return station_repo.list_stations(landlord_id=landlordId, keyword=keyword)
+async def list_stations(landlordId: int = None, keyword: str = None, page: int = None, pageSize: int = None):
+    return station_repo.list_stations(landlord_id=landlordId, keyword=keyword, page=page, page_size=pageSize)
 
 
 @router.get("/{station_id}")
@@ -42,8 +42,8 @@ async def get_station_meter_view(station_id: int, period: str = None):
         today = date.today()
         period = today.strftime("%Y-%m")
 
-    # 获取所有电表
-    meters = meter_repo.list_station_meters(station_id)
+    # 获取所有电表（排除测试电表）
+    meters = [m for m in meter_repo.list_station_meters(station_id) if not str(m.get("meter_no", "")).startswith("TEST")]
     meter_ids = [m["id"] for m in meters]
 
     # 获取每个电表的柜子
@@ -90,6 +90,9 @@ async def get_station_meter_view(station_id: int, period: str = None):
                 tax_enabled = True
                 tax_rate = float(c["tax_rate"]) if c.get("tax_rate") else None
                 post_tax_price = float(c["post_tax_electricity_price"]) if c.get("post_tax_electricity_price") else None
+            else:
+                # 未启用税率时，含税价=不含税价
+                post_tax_price = float(c["electricity_price"])
 
     # 获取能耗数据（日用电量）
     from ..infra.database import get_connection, get_dict_cursor
@@ -191,6 +194,7 @@ async def get_station_meter_view(station_id: int, period: str = None):
             prev_md = prev_meter_detail_map.get(mid)
             cab_list = cabinets_by_meter.get(mid, [])
             cabinet_nos = [c.get("cabinet_no", "") for c in cab_list if c.get("cabinet_no")]
+            cabinet_count = max(1, len(cab_list))
 
             # 该电表的能耗数据
             meter_no = meter.get("meter_no")
@@ -223,7 +227,7 @@ async def get_station_meter_view(station_id: int, period: str = None):
                 "meterNo": meter.get("meter_no"),
                 "meterName": meter.get("meter_name"),
                 "brandName": brand_name,
-                "cabinetCount": len(cab_list),
+                "cabinetCount": cabinet_count,
                 "cabinetNos": ", ".join(cabinet_nos) if cabinet_nos else "-",
                 # 上月抄表（来自月度用电量）
                 "prevEndReading": prev_month_kwh,

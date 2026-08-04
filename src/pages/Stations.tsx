@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getStationBoard } from "@/api/overview";
+import { getStationBoard, getLandlordStationMonthly } from "@/api/overview";
 import { getStationMeterView } from "@/api/stations";
 import { listBrands } from "@/api/directory";
 import { Money, StatusBadge } from "@/components/Stat";
@@ -10,8 +10,9 @@ import { StationForm } from "@/components/StationForm";
 import { MonthPicker } from "@/components/MonthPicker";
 import { exportXlsx } from "@/lib/export";
 import { fmtMoney, fmtNum, fmtPct, fmtDate } from "@/lib/format";
-import { Download, Plus, Search, ChevronDown, ChevronRight, MapPin, Gauge, ArrowLeft, Zap, Battery, Receipt, TrendingUp, Home } from "lucide-react";
+import { Download, Search, ChevronDown, ChevronRight, ChevronLeft, MapPin, Gauge, ArrowLeft, Zap, Battery, Receipt, TrendingUp, Home, DollarSign, Activity, BarChart3 } from "lucide-react";
 import { toast } from "sonner";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, PieChart, Pie, Cell } from "recharts";
 
 // ─── 信息行 ───
 function InfoRow({ label, value }: { label: string; value: any }) {
@@ -441,6 +442,258 @@ function ExpandedDetail({ landlordId, meters, stations, period, summary }: { lan
   );
 }
 
+// ─── 单个场地方可视化面板 ───
+const ELEC_PROFIT_COLORS = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#06b6d4", "#8b5cf6", "#ec4899", "#14b8a6"];
+const RENT_PROFIT_COLORS = ["#f97316", "#6366f1", "#eab308", "#e11d48", "#0891b2", "#7c3aed", "#db2777", "#0d9488"];
+const TREND_COLORS = ["#10b981", "#6366f1", "#f59e0b", "#ef4444", "#06b6d4", "#8b5cf6", "#ec4899", "#14b8a6"];
+
+function SingleLandlordPanel({ row }: { row: any }) {
+  const r = row;
+  const { data: monthlyData, isLoading } = useQuery({
+    queryKey: ["landlordStationMonthly", r.landlord.id],
+    queryFn: () => getLandlordStationMonthly(r.landlord.id, 6),
+  });
+
+  const breakdown = r.stationBreakdown || [];
+
+  // 饼图数据：各站点电费利润贡献率
+  const elecProfitPie = breakdown
+    .map((s: any) => ({ name: s.station_name || "未分配", value: Math.abs(s.elecProfit || 0) }))
+    .filter((d: any) => d.value > 0);
+
+  // 饼图数据：各站点场地利润贡献率（均摊）
+  const stationCount = breakdown.length || 1;
+  const rentProfitPerStation = (r.rentProfit || 0) / stationCount;
+  const rentProfitPie = breakdown
+    .map((s: any) => ({ name: s.station_name || "未分配", value: Math.abs(rentProfitPerStation) }))
+    .filter((d: any) => d.value > 0);
+
+  // 柱状图数据：近半年各站点利润（堆叠）
+  const barData = (monthlyData || []).map((m: any) => {
+    const entry: any = { period: m.period.replace(/^\d{4}-/, "") };
+    let total = 0;
+    (m.stations || []).forEach((s: any, i: number) => {
+      entry[s.stationName] = s.totalProfit;
+      total += s.totalProfit;
+    });
+    entry._total = total;
+    return entry;
+  });
+
+  // 收集所有站点名（用于堆叠柱状图）
+  const stationNames = [...new Set((monthlyData || []).flatMap((m: any) => (m.stations || []).map((s: any) => s.stationName)))];
+
+  const kpis = [
+    { label: "电费利润", value: r.elecProfit, icon: Zap, color: r.elecProfit >= 0 ? "text-emerald-600" : "text-rose-600", bg: r.elecProfit >= 0 ? "bg-emerald-50" : "bg-rose-50" },
+    { label: "场地利润", value: r.rentProfit, icon: Home, color: r.rentProfit >= 0 ? "text-emerald-600" : "text-rose-600", bg: r.rentProfit >= 0 ? "bg-emerald-50" : "bg-rose-50" },
+    { label: "运营费用", value: r.opExpense, icon: Activity, color: "text-amber-600", bg: "bg-amber-50" },
+    { label: "总利润", value: r.totalProfit, icon: DollarSign, color: r.totalProfit >= 0 ? "text-emerald-700" : "text-rose-700", bg: r.totalProfit >= 0 ? "bg-emerald-100" : "bg-rose-100" },
+  ];
+
+  const tooltipFmt = (v: number) => fmtMoney(v);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 rounded-lg border bg-emerald-50 px-3 py-2">
+        <MapPin className="h-4 w-4 text-emerald-600" />
+        <span className="text-xs font-semibold text-emerald-800">{r.landlord.name}</span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        {kpis.map((k) => (
+          <div key={k.label} className={`rounded-lg border px-3 py-2 ${k.bg}`}>
+            <div className="flex items-center gap-1.5">
+              <k.icon className={`h-3.5 w-3.5 ${k.color}`} />
+              <span className="text-[10px] text-slate-500">{k.label}</span>
+            </div>
+            <div className={`text-base font-bold tabular-nums ${k.color}`}>{fmtMoney(k.value)}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* 电费利润贡献率饼图 */}
+      {elecProfitPie.length > 0 && (
+        <div className="rounded-lg border bg-white p-3">
+          <div className="mb-1 text-xs font-semibold text-slate-600">各站点电费利润贡献率</div>
+          <ResponsiveContainer width="100%" height={200}>
+            <PieChart>
+              <Pie data={elecProfitPie} cx="50%" cy="45%" innerRadius={30} outerRadius={55} paddingAngle={3} dataKey="value" label={({ name, percent }) => `${name.length > 8 ? name.slice(0, 8) + '…' : name} ${(percent * 100).toFixed(0)}%`} labelLine={{ stroke: '#94a3b8', strokeWidth: 1 }}>
+                {elecProfitPie.map((_: any, i: number) => <Cell key={i} fill={ELEC_PROFIT_COLORS[i % ELEC_PROFIT_COLORS.length]} />)}
+              </Pie>
+              <Tooltip formatter={tooltipFmt} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* 场地利润贡献率饼图 */}
+      {rentProfitPie.length > 0 && (
+        <div className="rounded-lg border bg-white p-3">
+          <div className="mb-1 text-xs font-semibold text-slate-600">各站点场地利润贡献率</div>
+          <ResponsiveContainer width="100%" height={200}>
+            <PieChart>
+              <Pie data={rentProfitPie} cx="50%" cy="45%" innerRadius={30} outerRadius={55} paddingAngle={3} dataKey="value" label={({ name, percent }) => `${name.length > 8 ? name.slice(0, 8) + '…' : name} ${(percent * 100).toFixed(0)}%`} labelLine={{ stroke: '#94a3b8', strokeWidth: 1 }}>
+                {rentProfitPie.map((_: any, i: number) => <Cell key={i} fill={RENT_PROFIT_COLORS[i % RENT_PROFIT_COLORS.length]} />)}
+              </Pie>
+              <Tooltip formatter={tooltipFmt} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* 近半年利润趋势（堆叠柱状图，按站点分色） */}
+      {barData.length > 0 && (
+        <div className="rounded-lg border bg-white p-3">
+          <div className="mb-2 text-xs font-semibold text-slate-700">近半年利润趋势</div>
+          {isLoading ? (
+            <div className="py-6 text-center text-xs text-slate-400">加载中…</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={barData} margin={{ left: 0, right: 10, top: 5, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis dataKey="period" tick={{ fontSize: 10 }} />
+                <YAxis tickFormatter={(v: number) => v >= 10000 ? `${(v / 10000).toFixed(1)}w` : String(v)} tick={{ fontSize: 10 }} />
+                <Tooltip formatter={tooltipFmt} labelStyle={{ fontSize: 12 }} />
+                <Legend wrapperStyle={{ fontSize: 10 }} />
+                {stationNames.map((name: string, i: number) => (
+                  <Bar key={name} dataKey={name} stackId="profit" fill={TREND_COLORS[i % TREND_COLORS.length]} radius={i === stationNames.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]} barSize={24} />
+                ))}
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── 可视化面板 ───
+function VisualizationPanel({ rows, expandedRow, collapsed, onToggle }: { rows: any[]; expandedRow: any; collapsed: boolean; onToggle: () => void }) {
+  if (collapsed) {
+    return (
+      <div className="relative flex justify-center pt-4">
+        <button
+          onClick={onToggle}
+          className="flex h-10 w-5 items-center justify-center rounded-l-md border border-r-0 bg-white text-slate-400 shadow-sm hover:bg-slate-50 hover:text-slate-600 transition-colors"
+          title="展开可视化面板"
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      {/* 收起按钮 */}
+      <button
+        onClick={onToggle}
+        className="absolute -left-5 top-4 z-10 flex h-10 w-5 items-center justify-center rounded-l-md border border-r-0 bg-white text-slate-400 shadow-sm hover:bg-slate-50 hover:text-slate-600 transition-colors"
+        title="收起可视化面板"
+      >
+        <ChevronRight className="h-3.5 w-3.5" />
+      </button>
+      {rows.length > 0 ? <ComparisonPanel rows={rows} /> : expandedRow ? <SingleLandlordPanel row={expandedRow} /> : null}
+    </div>
+  );
+}
+
+// ─── 对比面板（选中场地方） ───
+function ComparisonPanel({ rows }: { rows: any[] }) {
+  const profitData = rows
+    .map((r: any) => ({
+      name: r.landlord.name,
+      电费利润: r.elecProfit,
+      场地利润: r.rentProfit,
+      总利润: r.totalProfit,
+    }))
+    .sort((a: any, b: any) => b.总利润 - a.总利润);
+
+  const costIncomeData = rows
+    .map((r: any) => ({
+      name: r.landlord.name,
+      电费付款: r.elecPay,
+      电费收款: r.elecCollect,
+      场地成本: r.rentCost,
+      场地收入: r.rentIncome,
+    }))
+    .sort((a: any, b: any) => (b.电费收款 + b.场地收入) - (a.电费收款 + a.场地收入));
+
+  const selTotals = rows.reduce(
+    (t: any, r: any) => ({
+      elecProfit: t.elecProfit + r.elecProfit,
+      rentProfit: t.rentProfit + r.rentProfit,
+      opExpense: t.opExpense + r.opExpense,
+      totalProfit: t.totalProfit + r.totalProfit,
+    }),
+    { elecProfit: 0, rentProfit: 0, opExpense: 0, totalProfit: 0 },
+  );
+
+  const kpis = [
+    { label: "电费利润", value: selTotals.elecProfit, icon: Zap, color: selTotals.elecProfit >= 0 ? "text-emerald-600" : "text-rose-600", bg: selTotals.elecProfit >= 0 ? "bg-emerald-50" : "bg-rose-50" },
+    { label: "场地利润", value: selTotals.rentProfit, icon: Home, color: selTotals.rentProfit >= 0 ? "text-emerald-600" : "text-rose-600", bg: selTotals.rentProfit >= 0 ? "bg-emerald-50" : "bg-rose-50" },
+    { label: "运营费用", value: selTotals.opExpense, icon: Activity, color: "text-amber-600", bg: "bg-amber-50" },
+    { label: "总利润", value: selTotals.totalProfit, icon: DollarSign, color: selTotals.totalProfit >= 0 ? "text-emerald-700" : "text-rose-700", bg: selTotals.totalProfit >= 0 ? "bg-emerald-100" : "bg-rose-100" },
+  ];
+
+  const tooltipFmt = (v: number) => fmtMoney(v);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 rounded-lg border bg-blue-50 px-3 py-2">
+        <BarChart3 className="h-4 w-4 text-blue-600" />
+        <span className="text-xs font-semibold text-blue-800">已选 {rows.length} 个场地方对比</span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        {kpis.map((k) => (
+          <div key={k.label} className={`rounded-lg border px-3 py-2 ${k.bg}`}>
+            <div className="flex items-center gap-1.5">
+              <k.icon className={`h-3.5 w-3.5 ${k.color}`} />
+              <span className="text-[10px] text-slate-500">{k.label}</span>
+            </div>
+            <div className={`text-base font-bold tabular-nums ${k.color}`}>{fmtMoney(k.value)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-lg border bg-white p-3">
+        <div className="mb-2 text-xs font-semibold text-slate-700">利润对比</div>
+        <ResponsiveContainer width="100%" height={Math.max(180, rows.length * 40)}>
+          <BarChart data={profitData} layout="vertical" margin={{ left: 0, right: 10, top: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+            <XAxis type="number" tickFormatter={(v: number) => v >= 10000 ? `${(v / 10000).toFixed(1)}w` : String(v)} tick={{ fontSize: 10 }} />
+            <YAxis type="category" dataKey="name" width={70} tick={{ fontSize: 11 }} />
+            <Tooltip formatter={tooltipFmt} labelStyle={{ fontSize: 12 }} />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Bar dataKey="电费利润" fill="#10b981" radius={[0, 2, 2, 0]} barSize={8} />
+            <Bar dataKey="场地利润" fill="#6366f1" radius={[0, 2, 2, 0]} barSize={8} />
+            <Bar dataKey="总利润" fill="#f59e0b" radius={[0, 2, 2, 0]} barSize={8} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="rounded-lg border bg-white p-3">
+        <div className="mb-2 text-xs font-semibold text-slate-700">收入 vs 成本</div>
+        <ResponsiveContainer width="100%" height={Math.max(180, rows.length * 40)}>
+          <BarChart data={costIncomeData} layout="vertical" margin={{ left: 0, right: 10, top: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+            <XAxis type="number" tickFormatter={(v: number) => v >= 10000 ? `${(v / 10000).toFixed(1)}w` : String(v)} tick={{ fontSize: 10 }} />
+            <YAxis type="category" dataKey="name" width={70} tick={{ fontSize: 11 }} />
+            <Tooltip formatter={tooltipFmt} labelStyle={{ fontSize: 12 }} />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Bar dataKey="电费付款" fill="#ef4444" radius={[0, 2, 2, 0]} barSize={6} />
+            <Bar dataKey="电费收款" fill="#10b981" radius={[0, 2, 2, 0]} barSize={6} />
+            <Bar dataKey="场地成本" fill="#f97316" radius={[0, 2, 2, 0]} barSize={6} />
+            <Bar dataKey="场地收入" fill="#06b6d4" radius={[0, 2, 2, 0]} barSize={6} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// ─── 场地方专属面板 ───
 // ─── 主页面 ───
 export default function Stations() {
   const [keyword, setKeyword] = useState("");
@@ -451,6 +704,8 @@ export default function Stations() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [panelCollapsed, setPanelCollapsed] = useState(true);
+  const [selectedLandlordIds, setSelectedLandlordIds] = useState<Set<number>>(new Set());
 
   const brands = useQuery({ queryKey: ["brands"], queryFn: listBrands });
   const board = useQuery({
@@ -459,6 +714,8 @@ export default function Stations() {
   });
 
   const rows = useMemo(() => board.data ?? [], [board.data]);
+  const selectedRows = useMemo(() => rows.filter((r: any) => selectedLandlordIds.has(r.landlord.id)), [rows, selectedLandlordIds]);
+  const expandedRow = useMemo(() => expandedId != null ? rows.find((r: any) => r.landlord.id === expandedId) : null, [rows, expandedId]);
   const totals = useMemo(() => rows.reduce(
     (t: any, r: any) => ({
       elecPay: t.elecPay + r.elecPay, elecCollect: t.elecCollect + r.elecCollect, elecProfit: t.elecProfit + r.elecProfit,
@@ -470,22 +727,195 @@ export default function Stations() {
   ), [rows]);
 
   const toggleExpand = (id: number) => {
-    setExpandedId((prev) => (prev === id ? null : id));
+    setExpandedId((prev) => {
+      const next = prev === id ? null : id;
+      // 展开时自动打开右侧面板（如果没有勾选的话）
+      if (next !== null && selectedLandlordIds.size === 0) setPanelCollapsed(false);
+      if (next === null && selectedLandlordIds.size === 0) setPanelCollapsed(true);
+      return next;
+    });
   };
 
-  const doExport = () => {
-    if (rows.length === 0) { toast.error("暂无数据可导出"); return; }
-    exportXlsx(`站点数据看板_${selectedMonth}`, [{
-      name: "站点看板",
-      rows: rows.map((r: any) => ({
-        场地方: r.landlord.name, 联系人: r.landlord.contact ?? "", 电话: r.landlord.phone ?? "",
-        电表数: r.meterCount, 站点数: r.stationCount,
-        电费付款: r.elecPay, 电费收款: r.elecCollect, 电费利润: r.elecProfit,
-        租金成本: r.rentCost, 租金收入: r.rentIncome, 租金利润: r.rentProfit,
-        运营费用: r.opExpense, 总利润: r.totalProfit,
-      })),
-    }]);
-    toast.success("已导出 Excel");
+  const toggleLandlordSelect = (id: number) => {
+    setSelectedLandlordIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      // 有选中时自动展开面板
+      setPanelCollapsed(next.size === 0);
+      return next;
+    });
+  };
+
+  const doExport = async () => {
+    const exportRows = selectedLandlordIds.size > 0 ? selectedRows : rows;
+    if (exportRows.length === 0) { toast.error("暂无数据可导出"); return; }
+
+    const tid = toast.loading("正在准备导出数据…");
+    try {
+      // 按场地方分组收集站点
+      const landlordStations: { landlordId: number; landlordName: string; stations: any[]; boardRow: any }[] = [];
+      for (const r of exportRows) {
+        landlordStations.push({ landlordId: r.landlord.id, landlordName: r.landlord.name, stations: r.stations || [], boardRow: r });
+      }
+
+      // 并行获取所有站点的电表详情
+      const allStationIds: { id: number; landlordIdx: number }[] = [];
+      landlordStations.forEach((ls, idx) => {
+        for (const s of ls.stations) {
+          allStationIds.push({ id: s.id, landlordIdx: idx });
+        }
+      });
+      const meterViews = await Promise.all(
+        allStationIds.map(s => getStationMeterView(s.id, selectedMonth))
+      );
+      // 按场地方索引分组meterViews
+      const mvByLandlord: any[][] = landlordStations.map(() => []);
+      allStationIds.forEach((s, i) => { mvByLandlord[s.landlordIdx].push(meterViews[i]); });
+
+      // 每个场地方的付款汇总 + 租金（来自board，场地方级）
+      const landlordPayMap = exportRows.map((r: any) => {
+        const cb = r.contractBreakdown || [];
+        const payContract = cb.find((c: any) => c.type === "场地合同");
+        const payStatuses = new Set<string>();
+        return {
+          payKwh: r.totalKwh ?? 0,
+          payUnitPrice: payContract?.elecPrice ?? 0,
+          payAmount: r.elecPay ?? 0,
+          payStatuses,
+          rentCost: r.rentCost ?? 0,
+          rentIncome: r.rentIncome ?? 0,
+        };
+      });
+      // 收集付款状态
+      for (let li = 0; li < mvByLandlord.length; li++) {
+        for (const mv of mvByLandlord[li]) {
+          for (const group of (mv.brandGroups || [])) {
+            for (const meter of (group.meters || [])) {
+              if (meter.payStatus) landlordPayMap[li].payStatuses.add(meter.payStatus);
+            }
+          }
+        }
+      }
+
+      const excelRows: any[] = [];
+
+      for (let li = 0; li < landlordStations.length; li++) {
+        const ls = landlordStations[li];
+        const pay = landlordPayMap[li];
+        const payStatusStr = pay.payStatuses.size === 1 ? [...pay.payStatuses][0] : pay.payStatuses.size > 1 ? "部分付款" : "";
+
+        // 场地方级汇总
+        let landCollectKwh = 0, landCollectAmount = 0, landCollectNet = 0, landMeterCount = 0, landRentIncome = 0;
+
+        for (let si = 0; si < mvByLandlord[li].length; si++) {
+          const mv = mvByLandlord[li][si];
+          // 收集该站点所有电表
+          const allMeters: any[] = [];
+          for (const group of (mv.brandGroups || [])) {
+            for (const meter of (group.meters || [])) {
+              allMeters.push(meter);
+            }
+          }
+
+          // 站点级汇总（用于场地方合计）
+          landCollectKwh += allMeters.reduce((s, m) => s + (m.payKwh || 0), 0);
+          landCollectAmount += allMeters.reduce((s, m) => s + (m.collectAmount || 0), 0);
+          landCollectNet += allMeters.reduce((s, m) => s + (m.collectNet || 0), 0);
+          landMeterCount += allMeters.length;
+
+          // 该站点的品牌方合同租金（按品牌匹配）
+          const stationBrandName = allMeters[0]?.brandName;
+          const incomeContracts = mv.contractRent?.income || [];
+          const stationIncome = incomeContracts.find((c: any) => c.brandName === stationBrandName);
+          const stationRentIncome = stationIncome?.monthlyRent ?? 0;
+          landRentIncome += stationRentIncome;
+
+          // 第一块电表行：包含站点名 + 付款汇总 + 收款明细
+          if (allMeters.length > 0) {
+            const first = allMeters[0];
+            excelRows.push({
+              场地方: ls.landlordName,
+              站点名称: mv.stationName,
+              品牌: first.brandName,
+              数量: first.cabinetCount,
+              柜子编号: first.cabinetNos,
+              付款度数: pay.payKwh,
+              付款单价: pay.payUnitPrice,
+              付款金额: pay.payAmount,
+              付款情况: payStatusStr,
+              电费收款区间: first.collectStartDate && first.collectEndDate ? `${fmtDate(first.collectStartDate)} ~ ${fmtDate(first.collectEndDate)}` : "",
+              收款度数: first.payKwh ?? "",
+              "收入单价（含税）": first.collectUnitPrice ?? "",
+              "收入（含税）": first.collectAmount ?? "",
+              电费收款情况: first.collectStatus ?? "",
+              "收入单价（不含税）": first.postTaxPrice ?? "",
+              "电费收入（不含税）": first.collectNet ?? "",
+              场地收款期间: stationIncome?.startDate && stationIncome?.endDate ? `${stationIncome.startDate} ~ ${stationIncome.endDate}` : "",
+              场地租金: stationRentIncome,
+              租金收款情况: stationIncome?.payStatus ?? "",
+            });
+          }
+
+          // 后续电表行：只有品牌 + 柜子编号 + 收款明细
+          for (let j = 1; j < allMeters.length; j++) {
+            const m = allMeters[j];
+            excelRows.push({
+              场地方: "",
+              站点名称: "",
+              品牌: m.brandName,
+              数量: m.cabinetCount,
+              柜子编号: m.cabinetNos,
+              付款度数: "",
+              付款单价: "",
+              付款金额: "",
+              付款情况: "",
+              电费收款区间: m.collectStartDate && m.collectEndDate ? `${fmtDate(m.collectStartDate)} ~ ${fmtDate(m.collectEndDate)}` : "",
+              收款度数: m.payKwh ?? "",
+              "收入单价（含税）": m.collectUnitPrice ?? "",
+              "收入（含税）": m.collectAmount ?? "",
+              电费收款情况: m.collectStatus ?? "",
+              "收入单价（不含税）": m.postTaxPrice ?? "",
+              "电费收入（不含税）": m.collectNet ?? "",
+              场地收款期间: "",
+              场地租金: "",
+              租金收款情况: "",
+            });
+          }
+        }
+
+        // 场地方合计行
+        excelRows.push({
+          场地方: "",
+          站点名称: "合计",
+          品牌: "",
+          数量: landMeterCount,
+          柜子编号: "",
+          付款度数: pay.payKwh,
+          付款单价: "",
+          付款金额: pay.payAmount,
+          付款情况: "",
+          电费收款区间: "",
+          收款度数: landCollectKwh,
+          "收入单价（含税）": "",
+          "收入（含税）": landCollectAmount,
+          电费收款情况: "",
+          "收入单价（不含税）": "",
+          "电费收入（不含税）": landCollectNet,
+          场地收款期间: "",
+          场地租金: landRentIncome,
+          租金收款情况: "",
+        });
+      }
+
+      exportXlsx(`站点详细数据_${selectedMonth}`, [{ name: "站点详细数据", rows: excelRows }]);
+      toast.dismiss(tid);
+      toast.success("已导出 Excel");
+    } catch (e) {
+      toast.dismiss(tid);
+      toast.error("导出失败，请重试");
+      console.error(e);
+    }
   };
 
   return (
@@ -497,100 +927,136 @@ export default function Stations() {
         </div>
         <MonthPicker value={selectedMonth} onChange={setSelectedMonth} />
         <div className="ml-auto flex gap-2">
-          <Button variant="outline" onClick={doExport}><Download className="mr-1.5 h-4 w-4" />导出表格</Button>
+          <Button variant="outline" onClick={doExport}>
+            <Download className="mr-1.5 h-4 w-4" />
+            {selectedLandlordIds.size > 0 ? `导出选中（${selectedLandlordIds.size}）` : "导出全部"}
+          </Button>
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border bg-white shadow-sm">
-        <table className="w-full min-w-[1100px] text-sm">
-          <thead>
-            <tr className="border-b bg-slate-50 text-left text-xs text-slate-500">
-              <th className="w-8 px-1 py-2.5"></th>
-              <th className="px-3 py-2.5 font-medium">场地方</th>
-              <th className="px-3 py-2.5 text-center font-medium">电表数</th>
-              <th className="px-3 py-2.5 text-right font-medium">电费付款</th>
-              <th className="px-3 py-2.5 text-right font-medium">电费收款</th>
-              <th className="px-3 py-2.5 text-right font-medium">电费利润</th>
-              <th className="px-3 py-2.5 text-right font-medium">租金成本</th>
-              <th className="px-3 py-2.5 text-right font-medium">租金收入</th>
-              <th className="px-3 py-2.5 text-right font-medium">运营费用</th>
-              <th className="px-3 py-2.5 text-right font-medium">总利润</th>
-              <th className="px-3 py-2.5 text-center font-medium">合同</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r: any) => {
-              const isExpanded = expandedId === r.landlord.id;
-              return (
-                <Fragment key={r.landlord.id}>
-                  <tr className={`border-b hover:bg-slate-50/60 cursor-pointer ${isExpanded ? "bg-slate-50/80" : ""}`} onClick={() => toggleExpand(r.landlord.id)}>
-                    <td className="px-1 py-2.5 text-center">
-                      {isExpanded ? <ChevronDown className="h-4 w-4 text-slate-400" /> : <ChevronRight className="h-4 w-4 text-slate-300" />}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <div className="flex items-center gap-2">
-                        <MapPin className="h-4 w-4 text-emerald-600" />
-                        <div>
-                          <div className="font-medium text-slate-800">{r.landlord.name}</div>
-                          <div className="text-[11px] text-slate-400">
-                            {r.landlord.contact ? `联系人：${r.landlord.contact}` : ""}
-                            {r.landlord.phone ? ` · ${r.landlord.phone}` : ""}
+      <div className={`grid grid-cols-1 gap-4 ${panelCollapsed ? "lg:grid-cols-[1fr_40px]" : "lg:grid-cols-[1fr_400px]"}`}>
+        {/* 左侧：数据表格 */}
+        <div className="overflow-x-auto rounded-xl border bg-white shadow-sm">
+          <table className="w-full min-w-[900px] text-sm">
+            <thead>
+              <tr className="border-b bg-slate-50 text-left text-xs text-slate-500">
+                <th className="w-8 px-1 py-2.5"></th>
+                <th className="w-8 px-1 py-2.5">
+                  <input
+                    type="checkbox"
+                    className="rounded border-slate-300"
+                    checked={selectedLandlordIds.size > 0 && selectedLandlordIds.size === rows.length}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedLandlordIds(new Set(rows.map((r: any) => r.landlord.id)));
+                        setPanelCollapsed(false);
+                      } else {
+                        setSelectedLandlordIds(new Set());
+                        setPanelCollapsed(true);
+                      }
+                    }}
+                  />
+                </th>
+                <th className="px-3 py-2.5 font-medium">场地方</th>
+                <th className="px-3 py-2.5 text-center font-medium">电表数</th>
+                <th className="px-3 py-2.5 text-right font-medium">电费付款</th>
+                <th className="px-3 py-2.5 text-right font-medium">电费收款</th>
+                <th className="px-3 py-2.5 text-right font-medium">电费利润</th>
+                <th className="px-3 py-2.5 text-right font-medium">租金成本</th>
+                <th className="px-3 py-2.5 text-right font-medium">租金收入</th>
+                <th className="px-3 py-2.5 text-right font-medium">运营费用</th>
+                <th className="px-3 py-2.5 text-right font-medium">总利润</th>
+                <th className="px-3 py-2.5 text-center font-medium">合同</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r: any) => {
+                const isExpanded = expandedId === r.landlord.id;
+                return (
+                  <Fragment key={r.landlord.id}>
+                    <tr className={`border-b hover:bg-slate-50/60 ${isExpanded ? "bg-slate-50/80" : ""}`}>
+                      <td className="px-1 py-2.5 text-center cursor-pointer" onClick={() => toggleExpand(r.landlord.id)}>
+                        {isExpanded ? <ChevronDown className="h-4 w-4 text-slate-400" /> : <ChevronRight className="h-4 w-4 text-slate-300" />}
+                      </td>
+                      <td className="px-1 py-2.5 text-center">
+                        <input
+                          type="checkbox"
+                          className="rounded border-slate-300"
+                          checked={selectedLandlordIds.has(r.landlord.id)}
+                          onChange={() => toggleLandlordSelect(r.landlord.id)}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </td>
+                      <td className="px-3 py-2.5 cursor-pointer" onClick={() => toggleExpand(r.landlord.id)}>
+                        <div className="flex items-center gap-2">
+                          <MapPin className="h-4 w-4 text-emerald-600" />
+                          <div>
+                            <div className="font-medium text-slate-800">{r.landlord.name}</div>
+                            <div className="text-[11px] text-slate-400">
+                              {r.landlord.contact ? `联系人：${r.landlord.contact}` : ""}
+                              {r.landlord.phone ? ` · ${r.landlord.phone}` : ""}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2.5 text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        <Gauge className="h-3.5 w-3.5 text-slate-400" />
-                        <span className="tabular-nums">{r.meterCount}</span>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2.5 text-right"><Money v={r.elecPay} /></td>
-                    <td className="px-3 py-2.5 text-right"><Money v={r.elecCollect} /></td>
-                    <td className="px-3 py-2.5 text-right"><Money v={r.elecProfit} strong /></td>
-                    <td className="px-3 py-2.5 text-right"><Money v={r.rentCost} /></td>
-                    <td className="px-3 py-2.5 text-right"><Money v={r.rentIncome} /></td>
-                    <td className="px-3 py-2.5 text-right"><Money v={r.opExpense} /></td>
-                    <td className="px-3 py-2.5 text-right"><Money v={r.totalProfit} strong /></td>
-                    <td className="px-3 py-2.5 text-center">
-                      <div className="text-xs">
-                        <span className="text-slate-500">{r.contractCount} 份</span>
-                        {r.expiredContracts > 0 && <span className="ml-1 text-rose-600">({r.expiredContracts}到期)</span>}
-                        {r.expiringContracts > 0 && <span className="ml-1 text-amber-600">({r.expiringContracts}临期)</span>}
-                      </div>
-                    </td>
-                  </tr>
-                  {isExpanded && (
-                    <tr key={`${r.landlord.id}-expanded`}>
-                      <td colSpan={11} className="border-b bg-white px-6 py-4">
-                        <ExpandedDetail landlordId={r.landlord.id} meters={r.meters} stations={r.stations} period={selectedMonth} summary={{ totalKwh: r.totalKwh, elecPay: r.elecPay, elecCollect: r.elecCollect, elecProfit: r.elecProfit, rentCost: r.rentCost, rentIncome: r.rentIncome, rentProfit: r.rentProfit, stationBreakdown: r.stationBreakdown, contractBreakdown: r.contractBreakdown }} />
+                      </td>
+                      <td className="px-3 py-2.5 text-center cursor-pointer" onClick={() => toggleExpand(r.landlord.id)}>
+                        <div className="flex items-center justify-center gap-1">
+                          <Gauge className="h-3.5 w-3.5 text-slate-400" />
+                          <span className="tabular-nums">{r.meterCount}</span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 text-right cursor-pointer" onClick={() => toggleExpand(r.landlord.id)}><Money v={r.elecPay} /></td>
+                      <td className="px-3 py-2.5 text-right cursor-pointer" onClick={() => toggleExpand(r.landlord.id)}><Money v={r.elecCollect} /></td>
+                      <td className="px-3 py-2.5 text-right cursor-pointer" onClick={() => toggleExpand(r.landlord.id)}><Money v={r.elecProfit} strong /></td>
+                      <td className="px-3 py-2.5 text-right cursor-pointer" onClick={() => toggleExpand(r.landlord.id)}><Money v={r.rentCost} /></td>
+                      <td className="px-3 py-2.5 text-right cursor-pointer" onClick={() => toggleExpand(r.landlord.id)}><Money v={r.rentIncome} /></td>
+                      <td className="px-3 py-2.5 text-right cursor-pointer" onClick={() => toggleExpand(r.landlord.id)}><Money v={r.opExpense} /></td>
+                      <td className="px-3 py-2.5 text-right cursor-pointer" onClick={() => toggleExpand(r.landlord.id)}><Money v={r.totalProfit} strong /></td>
+                      <td className="px-3 py-2.5 text-center cursor-pointer" onClick={() => toggleExpand(r.landlord.id)}>
+                        <div className="text-xs">
+                          <span className="text-slate-500">{r.contractCount} 份</span>
+                          {r.expiredContracts > 0 && <span className="ml-1 text-rose-600">({r.expiredContracts}到期)</span>}
+                          {r.expiringContracts > 0 && <span className="ml-1 text-amber-600">({r.expiringContracts}临期)</span>}
+                        </div>
                       </td>
                     </tr>
-                  )}
-                </Fragment>
-              );
-            })}
-            {rows.length === 0 && (
-              <tr><td colSpan={11} className="py-16 text-center text-slate-400">{board.isLoading ? "加载中…" : "暂无站点数据"}</td></tr>
+                    {isExpanded && (
+                      <tr key={`${r.landlord.id}-expanded`}>
+                        <td colSpan={12} className="border-b bg-white px-6 py-4">
+                          <ExpandedDetail landlordId={r.landlord.id} meters={r.meters} stations={r.stations} period={selectedMonth} summary={{ totalKwh: r.totalKwh, elecPay: r.elecPay, elecCollect: r.elecCollect, elecProfit: r.elecProfit, rentCost: r.rentCost, rentIncome: r.rentIncome, rentProfit: r.rentProfit, stationBreakdown: r.stationBreakdown, contractBreakdown: r.contractBreakdown }} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+              {rows.length === 0 && (
+                <tr><td colSpan={12} className="py-16 text-center text-slate-400">{board.isLoading ? "加载中…" : "暂无站点数据"}</td></tr>
+              )}
+            </tbody>
+            {rows.length > 0 && (
+              <tfoot>
+                <tr className="border-t bg-emerald-50/50 text-xs font-semibold text-slate-700">
+                  <td className="px-3 py-2.5" colSpan={3}>合计（{rows.length} 个场地方）</td>
+                  <td className="px-3 py-2.5 text-center tabular-nums">{rows.reduce((t: number, r: any) => t + r.meterCount, 0)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.elecPay)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.elecCollect)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.elecProfit)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.rentCost)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.rentIncome)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.opExpense)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.totalProfit)}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
             )}
-          </tbody>
-          {rows.length > 0 && (
-            <tfoot>
-              <tr className="border-t bg-emerald-50/50 text-xs font-semibold text-slate-700">
-                <td className="px-3 py-2.5" colSpan={2}>合计（{rows.length} 个场地方）</td>
-                <td className="px-3 py-2.5 text-center tabular-nums">{rows.reduce((t: number, r: any) => t + r.meterCount, 0)}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.elecPay)}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.elecCollect)}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.elecProfit)}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.rentCost)}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.rentIncome)}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.opExpense)}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(totals.totalProfit)}</td>
-                <td></td>
-              </tr>
-            </tfoot>
-          )}
-        </table>
+          </table>
+        </div>
+
+        {/* 右侧：可视化面板 */}
+        <div className="hidden lg:block">
+          <VisualizationPanel rows={selectedRows} expandedRow={expandedRow} collapsed={panelCollapsed} onToggle={() => setPanelCollapsed(p => !p)} />
+        </div>
       </div>
 
       <StationForm open={formOpen} onClose={() => setFormOpen(false)} record={editing} />

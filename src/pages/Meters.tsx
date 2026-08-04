@@ -4,6 +4,7 @@ import { listMeters, createMeter, updateMeter, deleteMeter, getMeter } from "@/a
 import { listCabinets, createCabinet, updateCabinet, deleteCabinet } from "@/api/cabinets";
 import { listStations } from "@/api/stations";
 import { listBrands, listLandlords, listEntities } from "@/api/directory";
+import { generateElectricity } from "@/api/electricity";
 import { triggerSync } from "@/api/meterEnergy";
 import { StatusBadge } from "@/components/Stat";
 import { Button } from "@/components/ui/button";
@@ -419,7 +420,7 @@ function MeterCard({ meter, isExpanded, onToggle, onEdit, onDelete, highlightCab
                   <tr key={c.id} className="border-b last:border-0 hover:bg-white/50">
                     <td className="px-2.5 py-1.5 font-medium">{c.cabinet_no}</td>
                     <td className="px-2.5 py-1.5">
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] ${c.cabinet_type === "防爆柜" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] ${c.cabinet_type === "储电柜" ? "bg-blue-100 text-blue-700" : "bg-emerald-100 text-emerald-700"}`}>
                         {c.cabinet_type}
                       </span>
                     </td>
@@ -456,9 +457,13 @@ function MeterForm({ open, onClose, record }: { open: boolean; onClose: () => vo
   const blank = { stationId: "", brandId: "", landlordId: "", entityId: "", meterNo: "", meterName: "", collectorId: "", transformerRatio: "", remark: "" };
   const [f, setF] = useState(blank);
   const queryClient = useQueryClient();
-  const stations = useQuery({ queryKey: ["stations"], queryFn: () => listStations(), enabled: open });
-  const brands = useQuery({ queryKey: ["brands"], queryFn: listBrands, enabled: open });
   const landlords = useQuery({ queryKey: ["landlords"], queryFn: listLandlords, enabled: open });
+  const stations = useQuery({
+    queryKey: ["stations", f.landlordId],
+    queryFn: () => listStations(f.landlordId ? { landlordId: Number(f.landlordId) } : undefined),
+    enabled: open,
+  });
+  const brands = useQuery({ queryKey: ["brands"], queryFn: listBrands, enabled: open });
   const entities = useQuery({ queryKey: ["entities"], queryFn: listEntities, enabled: open });
 
   useEffect(() => {
@@ -480,7 +485,16 @@ function MeterForm({ open, onClose, record }: { open: boolean; onClose: () => vo
 
   const save = useMutation({
     mutationFn: (data: any) => record ? updateMeter(record.id, data) : createMeter(data),
-    onSuccess: () => { toast.success("电表已保存"); queryClient.invalidateQueries({ queryKey: ["meters"] }); onClose(); },
+    onSuccess: async () => {
+      toast.success("电表已保存");
+      queryClient.invalidateQueries({ queryKey: ["meters"] });
+      // 自动生成当月电费
+      const period = new Date().toISOString().slice(0, 7).replace("-", "");
+      generateElectricity({ period }).then(() => {
+        queryClient.invalidateQueries({ queryKey: ["electricity"] });
+      }).catch(() => {});
+      onClose();
+    },
     onError: (e: any) => toast.error(e.message),
   });
 
@@ -505,8 +519,12 @@ function MeterForm({ open, onClose, record }: { open: boolean; onClose: () => vo
         <DialogHeader><DialogTitle>{record ? "编辑电表" : "新增电表"}</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <Field label="场地方 *">
-            <SelectInput value={f.landlordId} onChange={set("landlordId")}
+            <SelectInput value={f.landlordId} onChange={(v) => { set("landlordId")(v); set("stationId")(""); }}
               options={[{ value: "", label: "请选择场地方" }, ...(landlords.data ?? []).map((l: any) => ({ value: String(l.id), label: l.name }))]} />
+          </Field>
+          <Field label="站点">
+            <SelectInput value={f.stationId} onChange={set("stationId")}
+              options={[{ value: "", label: f.landlordId ? "请选择站点" : "请先选择场地方" }, ...((stations.data ?? []).map((s: any) => ({ value: String(s.id), label: s.name })))]} />
           </Field>
           <Field label="品牌方">
             <SelectInput value={f.brandId} onChange={set("brandId")}
@@ -533,7 +551,7 @@ function MeterForm({ open, onClose, record }: { open: boolean; onClose: () => vo
 
 // ─── 柜子表单 ───
 function CabinetForm({ open, onClose, meterId, record }: { open: boolean; onClose: () => void; meterId: number; record?: any }) {
-  const blank = { cabinetNo: "", cabinetType: "普通柜", count: "1", remark: "" };
+  const blank = { cabinetNo: "", cabinetType: "充电柜", count: "1", remark: "" };
   const [f, setF] = useState(blank);
   const queryClient = useQueryClient();
 
@@ -597,7 +615,7 @@ function CabinetForm({ open, onClose, meterId, record }: { open: boolean; onClos
           <Field label="柜子编号 *"><TextInput value={f.cabinetNo} onChange={set("cabinetNo")} placeholder="如：C001" /></Field>
           <Field label="柜子类型">
             <SelectInput value={f.cabinetType} onChange={set("cabinetType")}
-              options={[{ value: "普通柜", label: "普通柜" }, { value: "防爆柜", label: "防爆柜" }]} />
+              options={[{ value: "充电柜", label: "充电柜" }, { value: "储电柜", label: "储电柜" }]} />
           </Field>
           {!record && (
             <Field label="柜子数量"><NumInput value={f.count} onChange={set("count")} placeholder="1" /></Field>

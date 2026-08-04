@@ -8,6 +8,8 @@ import {
   listIntroducers, createIntroducer, updateIntroducer, deleteIntroducer,
   listPlatformUsers, createPlatformUser, updatePlatformUser, deletePlatformUser,
 } from "@/api/directory";
+import { listStations, deleteStation } from "@/api/stations";
+import { StationForm } from "@/components/StationForm";
 import { Button } from "@/components/ui/button";
 import { inputCls } from "@/components/fields";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -138,6 +140,84 @@ function CrudTable(props: {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ─── 站点管理 ───
+function StationsTable() {
+  const queryClient = useQueryClient();
+  const stations = useQuery({ queryKey: ["stations"], queryFn: () => listStations() });
+  const [formOpen, setFormOpen] = useState(false);
+  const [editRecord, setEditRecord] = useState<any>(null);
+  const [keyword, setKeyword] = useState("");
+
+  const invalidate = () => queryClient.invalidateQueries();
+
+  const filteredRows = useMemo(() => {
+    if (!keyword || !stations.data) return stations.data ?? [];
+    return stations.data.filter((r: any) =>
+      r.name?.includes(keyword) || r.code?.includes(keyword) || r.landlord_name?.includes(keyword) || r.region?.includes(keyword)
+    );
+  }, [stations.data, keyword]);
+
+  const statusColor = (s: string) =>
+    s === "运营中" ? "bg-emerald-100 text-emerald-700" :
+    s === "筹建中" ? "bg-amber-100 text-amber-700" :
+    "bg-slate-100 text-slate-600";
+
+  return (
+    <div className="rounded-xl border bg-white shadow-sm">
+      <div className="flex items-center justify-between border-b px-4 py-3">
+        <span className="text-sm font-semibold text-slate-700">站点管理（{filteredRows.length}）</span>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-slate-400" />
+            <input className={`${inputCls} w-40 pl-7 text-xs`} placeholder="搜索…" value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+          </div>
+          <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => { setEditRecord(null); setFormOpen(true); }}>
+            <Plus className="mr-1 h-3.5 w-3.5" />新增站点
+          </Button>
+        </div>
+      </div>
+      <table className="w-full text-sm">
+        <thead><tr className="border-b bg-slate-50 text-left text-xs text-slate-500">
+          <th className="px-4 py-2.5 font-medium">站点名称</th>
+          <th className="px-4 py-2.5 font-medium">站点编号</th>
+          <th className="px-4 py-2.5 font-medium">场地方</th>
+          <th className="px-4 py-2.5 font-medium">区域</th>
+          <th className="px-4 py-2.5 font-medium">电表数</th>
+          <th className="px-4 py-2.5 font-medium">状态</th>
+          <th className="px-4 py-2.5 font-medium">备注</th>
+          <th className="px-4 py-2.5 text-center font-medium">操作</th>
+        </tr></thead>
+        <tbody>
+          {filteredRows.map((row: any) => (
+            <tr key={row.id} className="border-b last:border-0 hover:bg-slate-50/60">
+              <td className="px-4 py-2.5 font-medium">{row.name}</td>
+              <td className="px-4 py-2.5 text-slate-600">{row.code ?? "-"}</td>
+              <td className="px-4 py-2.5 text-slate-600">{row.landlord_name ?? "-"}</td>
+              <td className="px-4 py-2.5 text-slate-600">{row.region ?? "-"}</td>
+              <td className="px-4 py-2.5 text-slate-600">{row.meter_count ?? 0}</td>
+              <td className="px-4 py-2.5">
+                <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${statusColor(row.status)}`}>{row.status ?? "运营中"}</span>
+              </td>
+              <td className="px-4 py-2.5 text-slate-600">{row.remark ?? "-"}</td>
+              <td className="px-4 py-2.5">
+                <div className="flex justify-center gap-1">
+                  <button className="rounded p-1 text-slate-400 hover:text-emerald-600" onClick={() => { setEditRecord(row); setFormOpen(true); }}><Pencil className="h-4 w-4" /></button>
+                  <button className="rounded p-1 text-slate-400 hover:text-rose-500"
+                    onClick={() => window.confirm("删除该站点？") && deleteStation(row.id).then(() => { toast.success("已删除"); invalidate(); })}><Trash2 className="h-4 w-4" /></button>
+                </div>
+              </td>
+            </tr>
+          ))}
+          {filteredRows.length === 0 && (
+            <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">暂无站点数据</td></tr>
+          )}
+        </tbody>
+      </table>
+      <StationForm open={formOpen} onClose={() => { setFormOpen(false); setEditRecord(null); }} record={editRecord} />
     </div>
   );
 }
@@ -340,6 +420,7 @@ export default function Directory() {
         <TabsTrigger value="brands">品牌方（{brands.data?.length ?? 0}）</TabsTrigger>
         <TabsTrigger value="entities">公司主体（{entities.data?.length ?? 0}）</TabsTrigger>
         <TabsTrigger value="landlords">场地方/业主（{landlords.data?.length ?? 0}）</TabsTrigger>
+        <TabsTrigger value="stations">站点</TabsTrigger>
         <TabsTrigger value="shareholders">股东（{shareholders.data?.length ?? 0}）</TabsTrigger>
         <TabsTrigger value="introducers">介绍人（{introducers.data?.length ?? 0}）</TabsTrigger>
         <TabsTrigger value="users">平台人员</TabsTrigger>
@@ -369,6 +450,9 @@ export default function Directory() {
           <CrudTable title="介绍人档案" rows={introducers.data}
             columns={[{ key: "name", label: "姓名" }, { key: "phone", label: "电话" }, { key: "remark", label: "备注" }]}
             onCreate={createIntroducer} onUpdate={(id, v) => updateIntroducer(id, v)} onDelete={deleteIntroducer} />
+        </TabsContent>
+        <TabsContent value="stations">
+          <StationsTable />
         </TabsContent>
         <TabsContent value="users">
           <PlatformUsersTable shareholders={shareholders.data} />

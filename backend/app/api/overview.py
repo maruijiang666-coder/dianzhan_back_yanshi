@@ -156,13 +156,13 @@ async def station_board(landlordId: int = None, keyword: str = None, period: str
         for landlord in landlords:
             lid = landlord["id"]
 
-            # 获取该场地方下的所有电表
+            # 获取该场地方下的所有电表（排除测试电表）
             cur.execute("""
                 SELECT m.id, m.meter_no, m.meter_name, m.brand_id, b.name as brand_name,
                        m.transformer_ratio, m.status
                 FROM meters m
                 LEFT JOIN brands b ON m.brand_id = b.id
-                WHERE m.landlord_id = %s
+                WHERE m.landlord_id = %s AND m.meter_no NOT LIKE 'TEST%%'
                 ORDER BY m.id
             """, (lid,))
             meters = cur.fetchall()
@@ -316,6 +316,182 @@ async def station_board(landlordId: int = None, keyword: str = None, period: str
                 "stationBreakdown": station_breakdown,
                 "contractBreakdown": contract_breakdown,
             })
+
+        return result
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.get("/landlord-trends")
+async def landlord_trends(landlordId: int, months: int = 6):
+    """某场地方近N个月利润趋势"""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        # 获取该场地方下的站点ID
+        cur.execute("SELECT id FROM stations WHERE landlord_id = %s", (landlordId,))
+        station_ids = [s["id"] for s in cur.fetchall()]
+
+        # 获取该场地方的合同
+        cur.execute("""
+            SELECT contract_type, electricity_price, monthly_rent
+            FROM contracts WHERE landlord_id = %s
+        """, (landlordId,))
+        contracts = cur.fetchall()
+
+        elec_pay_price = 0
+        elec_collect_price = 0
+        rent_cost = 0
+        rent_income = 0
+        for c in contracts:
+            ct = c["contract_type"]
+            if ct == "场地合同":
+                if c["electricity_price"]:
+                    elec_pay_price = float(c["electricity_price"])
+                if c["monthly_rent"]:
+                    rent_cost += float(c["monthly_rent"])
+            elif ct == "品牌方合同":
+                if c["electricity_price"]:
+                    elec_collect_price = float(c["electricity_price"])
+                if c["monthly_rent"]:
+                    rent_income += float(c["monthly_rent"])
+
+        # 从meter_monthly获取按月度数
+        cur.execute("""
+            SELECT mm.month_period, COALESCE(SUM(mm.kwh), 0) as kwh
+            FROM meter_monthly mm
+            JOIN meters m ON m.meter_no = mm.address
+            WHERE m.landlord_id = %s
+            GROUP BY mm.month_period
+            ORDER BY mm.month_period DESC
+            LIMIT %s
+        """, (landlordId, months))
+        monthly_kwh = cur.fetchall()
+        monthly_kwh.reverse()  # 升序
+
+        # 运营费用按月
+        if station_ids:
+            placeholders = ",".join(["%s"] * len(station_ids))
+            cur.execute(f"""
+                SELECT period, COALESCE(SUM(amount), 0) as total
+                FROM operating_expenses
+                WHERE station_id IN ({placeholders})
+                GROUP BY period
+            """, station_ids)
+            op_map = {r["period"]: float(r["total"]) for r in cur.fetchall()}
+        else:
+            op_map = {}
+
+        trends = []
+        for row in monthly_kwh:
+            kwh = float(row["kwh"])
+            ep = round(kwh * elec_pay_price, 2)
+            ec = round(kwh * elec_collect_price, 2)
+            eprofit = round(ec - ep, 2)
+            rprofit = round(rent_income - rent_cost, 2)
+            period = row["month_period"]
+            # 格式化period: "202607" -> "2026-07"
+            if len(period) == 6:
+                period = f"{period[:4]}-{period[4:]}"
+            op = op_map.get(period, 0)
+            trends.append({
+                "period": period,
+                "kwh": round(kwh, 2),
+                "elecPay": ep,
+                "elecCollect": ec,
+                "elecProfit": eprofit,
+                "rentCost": round(rent_cost, 2),
+                "rentIncome": round(rent_income, 2),
+                "rentProfit": rprofit,
+                "opExpense": round(op, 2),
+                "totalProfit": round(eprofit + rprofit - op, 2),
+            })
+
+        return trends
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.get("/landlord-station-monthly")
+async def landlord_station_monthly(landlordId: int, months: int = 6):
+    """某场地方近N个月按站点分月利润趋势"""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        # 获取该场地方下的站点
+        cur.execute("SELECT id, name FROM stations WHERE landlord_id = %s ORDER BY id", (landlordId,))
+        stations = cur.fetchall()
+
+        # 获取合同单价
+        cur.execute("""
+            SELECT contract_type, electricity_price, monthly_rent
+            FROM contracts WHERE landlord_id = %s
+        """, (landlordId,))
+        contracts = cur.fetchall()
+
+        elec_pay_price = 0
+        elec_collect_price = 0
+        rent_cost = 0
+        rent_income = 0
+        for c in contracts:
+            ct = c["contract_type"]
+            if ct == "场地合同":
+                if c["electricity_price"]:
+                    elec_pay_price = float(c["electricity_price"])
+                if c["monthly_rent"]:
+                    rent_cost += float(c["monthly_rent"])
+            elif ct == "品牌方合同":
+                if c["electricity_price"]:
+                    elec_collect_price = float(c["electricity_price"])
+                if c["monthly_rent"]:
+                    rent_income += float(c["monthly_rent"])
+
+        # 获取每个站点近N个月的度数
+        cur.execute("""
+            SELECT m.station_id, mm.month_period, COALESCE(SUM(mm.kwh), 0) as kwh
+            FROM meter_monthly mm
+            JOIN meters m ON m.meter_no = mm.address
+            WHERE m.landlord_id = %s
+            GROUP BY m.station_id, mm.month_period
+            ORDER BY mm.month_period DESC
+        """, (landlordId,))
+        all_rows = cur.fetchall()
+
+        # 按月分组，取最近N个月
+        month_map: dict = {}
+        for r in all_rows:
+            mp = r["month_period"]
+            if mp not in month_map:
+                month_map[mp] = {}
+            month_map[mp][r["station_id"]] = float(r["kwh"] or 0)
+
+        recent_months = sorted(month_map.keys(), reverse=True)[:months]
+        recent_months.reverse()
+
+        # 构建结果
+        result = []
+        station_count = len(stations) or 1
+        rent_profit_per_station = round((rent_income - rent_cost) / station_count, 2)
+
+        for mp in recent_months:
+            period = f"{mp[:4]}-{mp[4:]}" if len(mp) == 6 else mp
+            station_data = month_map.get(mp, {})
+            station_profits = []
+            for s in stations:
+                kwh = station_data.get(s["id"], 0)
+                ep = round(kwh * elec_pay_price, 2)
+                ec = round(kwh * elec_collect_price, 2)
+                eprofit = round(ec - ep, 2)
+                station_profits.append({
+                    "stationId": s["id"],
+                    "stationName": s["name"],
+                    "elecProfit": eprofit,
+                    "rentProfit": rent_profit_per_station,
+                    "totalProfit": round(eprofit + rent_profit_per_station, 2),
+                })
+            result.append({"period": period, "stations": station_profits})
 
         return result
     finally:
