@@ -18,5 +18,5 @@ export const updateElectricity = (id: number, data: any) =>
 export const deleteElectricity = (id: number) =>
   client.delete(`/electricity/${id}`).then(r => r.data);
 
-export const generateElectricity = (data: { period: string }) =>
+export const generateElectricity = (data: { period: string; stationId?: number }) =>
   client.post("/electricity/generate", data).then(r => r.data);

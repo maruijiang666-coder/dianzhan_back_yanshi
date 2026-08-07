@@ -38,3 +38,30 @@ export const submitDividendApproval = (data: {
 
 export const getApprovalByDividend = (dividendId: number) =>
   client.get(`/approvals/by-dividend/${dividendId}`).then(r => r.data);
+
+// 站点费用审批（电费/场地费）
+export interface StationApprovalData {
+  stationId: number;
+  stationName: string;
+  period: string;
+  approvalType: "电费付款" | "场地费付款" | "电费+场地费";
+  electricityAmount?: number;
+  rentAmount?: number;
+  totalAmount: number;
+  applicant: string;
+  reason?: string;
+}
+
+export const submitStationApproval = (data: StationApprovalData) =>
+  client.post("/approvals", {
+    bizType: data.approvalType === "电费付款" ? "电费付款" : data.approvalType === "场地费付款" ? "场地费付款" : "电费+场地费",
+    title: `${data.stationName} ${data.period} ${data.approvalType}`,
+    applicant: data.applicant,
+    amount: data.totalAmount,
+    reason: data.reason || `${data.stationName} ${data.period} ${data.approvalType}，金额 ${data.totalAmount} 元`,
+    stationId: data.stationId,
+    stationName: data.stationName,
+    period: data.period,
+    electricityAmount: data.electricityAmount,
+    rentAmount: data.rentAmount,
+  }).then(r => r.data);

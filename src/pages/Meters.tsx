@@ -5,14 +5,14 @@ import { listCabinets, createCabinet, updateCabinet, deleteCabinet } from "@/api
 import { listStations } from "@/api/stations";
 import { listBrands, listLandlords, listEntities } from "@/api/directory";
 import { generateElectricity } from "@/api/electricity";
-import { triggerSync } from "@/api/meterEnergy";
+import { triggerSync, saveMeterReading, getMeterReadings } from "@/api/meterEnergy";
 import { StatusBadge } from "@/components/Stat";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field, NumInput, TextInput, SelectInput, inputCls } from "@/components/fields";
 import { exportXlsx } from "@/lib/export";
 import { fmtNum, fmtDateTime } from "@/lib/format";
-import { Download, Search, Plus, Pencil, Trash2, Eye, Gauge, ChevronDown, ChevronRight, Box, RefreshCw } from "lucide-react";
+import { Download, Search, Plus, Pencil, Trash2, Eye, Gauge, ChevronDown, ChevronRight, Box, RefreshCw, BookOpen } from "lucide-react";
 import { toast } from "sonner";
 
 // ─── 倒计时格式化 ───
@@ -95,6 +95,7 @@ export default function Meters() {
   const [syncProgress, setSyncProgress] = useState("");
   const [syncConfirmOpen, setSyncConfirmOpen] = useState(false);
   const [highlightCabinet, setHighlightCabinet] = useState(false);
+  const [readingMeter, setReadingMeter] = useState<any>(null);
   const syncLimit = useSyncLimit();
   const lastClickRef = useRef(0);
   const cooldownRef = useRef(false);
@@ -294,6 +295,7 @@ export default function Meters() {
                     onToggle={() => toggleExpand(m.id)}
                     onEdit={() => { setEditRecord(m); setFormOpen(true); }}
                     onDelete={() => window.confirm("删除该电表？") && del.mutate(m.id)}
+                    onReading={() => setReadingMeter(m)}
                     highlightCabinet={isTargetGroup && expandedMeterId === m.id}
                   />
                 ))}
@@ -309,6 +311,9 @@ export default function Meters() {
       </div>
 
       <MeterForm open={formOpen} onClose={() => { setFormOpen(false); setEditRecord(null); }} record={editRecord} />
+
+      {/* 录入读数弹窗 */}
+      <ReadingForm open={!!readingMeter} onClose={() => setReadingMeter(null)} meter={readingMeter} />
 
       {/* 刷新确认弹窗 */}
       <Dialog open={syncConfirmOpen} onOpenChange={(o) => !o && setSyncConfirmOpen(false)}>
@@ -347,8 +352,8 @@ export default function Meters() {
 }
 
 // ─── 电表卡片组件 ───
-function MeterCard({ meter, isExpanded, onToggle, onEdit, onDelete, highlightCabinet }: {
-  meter: any; isExpanded: boolean; onToggle: () => void; onEdit: () => void; onDelete: () => void; highlightCabinet?: boolean;
+function MeterCard({ meter, isExpanded, onToggle, onEdit, onDelete, onReading, highlightCabinet }: {
+  meter: any; isExpanded: boolean; onToggle: () => void; onEdit: () => void; onDelete: () => void; onReading: () => void; highlightCabinet?: boolean;
 }) {
   const queryClient = useQueryClient();
   const cabinets = useQuery({
@@ -386,6 +391,7 @@ function MeterCard({ meter, isExpanded, onToggle, onEdit, onDelete, highlightCab
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-400">互感器倍数：{fmtNum(meter.transformer_ratio)}</span>
           <span className="text-xs text-slate-400">柜数：{cabinets.data ? Math.max(1, cabinets.data.length) : 1}</span>
+          <button className="rounded p-1 text-slate-400 hover:text-blue-600" onClick={(e) => { e.stopPropagation(); onReading(); }} title="录入读数"><BookOpen className="h-3.5 w-3.5" /></button>
           <button className="rounded p-1 text-slate-400 hover:text-emerald-600" onClick={(e) => { e.stopPropagation(); onEdit(); }}><Pencil className="h-3.5 w-3.5" /></button>
           <button className="rounded p-1 text-slate-400 hover:text-rose-500" onClick={(e) => { e.stopPropagation(); onDelete(); }}><Trash2 className="h-3.5 w-3.5" /></button>
         </div>
@@ -542,6 +548,190 @@ function MeterForm({ open, onClose, record }: { open: boolean; onClose: () => vo
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={onClose}>取消</Button>
             <Button className="bg-emerald-600 hover:bg-emerald-700" disabled={save.isPending} onClick={submit}>保存</Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── 录入读数表单 ───
+function ReadingForm({ open, onClose, meter }: { open: boolean; onClose: () => void; meter: any }) {
+  const now = new Date();
+  const defaultPeriod = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const [monthPeriod, setMonthPeriod] = useState(defaultPeriod);
+  const [kwh, setKwh] = useState("");
+  const [prevReadingDate, setPrevReadingDate] = useState("");
+  const [prevReading, setPrevReading] = useState("");
+  const [currReadingDate, setCurrReadingDate] = useState("");
+  const [currReading, setCurrReading] = useState("");
+  const [calcKwh, setCalcKwh] = useState(true); // 是否自动计算区间度数
+  const queryClient = useQueryClient();
+
+  // 加载该电表已有的读数
+  const readings = useQuery({
+    queryKey: ["meterReadings", meter?.meter_no],
+    queryFn: () => getMeterReadings(meter.meter_no),
+    enabled: open && !!meter?.meter_no,
+  });
+
+  // 切换月份时自动填充已有数据
+  useEffect(() => {
+    if (!readings.data || !monthPeriod) {
+      setKwh("");
+      setPrevReadingDate("");
+      setPrevReading("");
+      setCurrReadingDate("");
+      setCurrReading("");
+      return;
+    }
+    const existing = readings.data.find((r: any) => r.month_period === monthPeriod);
+    if (existing) {
+      setKwh(existing.kwh ? String(existing.kwh) : "");
+      setPrevReadingDate(existing.prev_reading_date || "");
+      setPrevReading(existing.prev_reading ? String(existing.prev_reading) : "");
+      setCurrReadingDate(existing.curr_reading_date || "");
+      setCurrReading(existing.curr_reading ? String(existing.curr_reading) : "");
+    } else {
+      setKwh("");
+      setPrevReadingDate("");
+      setPrevReading("");
+      setCurrReadingDate("");
+      setCurrReading("");
+    }
+  }, [readings.data, monthPeriod]);
+
+  useEffect(() => {
+    if (open) setMonthPeriod(defaultPeriod);
+  }, [open]);
+
+  // 自动计算区间度数
+  useEffect(() => {
+    if (calcKwh && prevReading && currReading) {
+      const diff = parseFloat(currReading) - parseFloat(prevReading);
+      if (!isNaN(diff) && diff >= 0) {
+        setKwh(String(diff));
+      }
+    }
+  }, [prevReading, currReading, calcKwh]);
+
+  // 已有读数的月份列表（用于高亮显示）
+  const existingMonths = new Set((readings.data ?? []).map((r: any) => r.month_period));
+
+  const save = useMutation({
+    mutationFn: () => saveMeterReading({
+      address: meter.meter_no,
+      monthPeriod,
+      kwh: kwh ? parseFloat(kwh) : undefined,
+      prevReadingDate: prevReadingDate || undefined,
+      prevReading: prevReading ? parseFloat(prevReading) : undefined,
+      currReadingDate: currReadingDate || undefined,
+      currReading: currReading ? parseFloat(currReading) : undefined,
+    }),
+    onSuccess: async () => {
+      toast.success("读数已保存");
+      try {
+        // 只刷新当前站点的电费，而非全部站点
+        await generateElectricity({ period: monthPeriod, stationId: meter.station_id });
+        queryClient.invalidateQueries({ queryKey: ["electricity"] });
+      } catch {}
+      onClose();
+    },
+    onError: (e: any) => toast.error(e.message || "保存失败"),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <BookOpen className="h-5 w-5 text-blue-600" />
+            录入电表读数
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            <div>表号：<span className="font-mono font-medium">{meter?.meter_no}</span></div>
+            <div>名称：{meter?.meter_name ?? "-"}</div>
+          </div>
+
+          <Field label="月份">
+            <input type="month" className="w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-sm"
+              value={monthPeriod ? `${monthPeriod.slice(0, 4)}-${monthPeriod.slice(4)}` : ""}
+              onChange={(e) => setMonthPeriod(e.target.value ? e.target.value.replace("-", "") : "")} />
+          </Field>
+
+          {/* 已有读数的月份提示 */}
+          {readings.data && readings.data.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {readings.data.map((r: any) => (
+                <button key={r.month_period}
+                  className={`rounded-full px-2 py-0.5 text-[10px] ${r.month_period === monthPeriod ? "bg-blue-100 text-blue-700 font-medium" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
+                  onClick={() => setMonthPeriod(r.month_period)}>
+                  {r.month_period.slice(0, 4)}-{r.month_period.slice(4)} ({r.kwh})
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* 上月抄表信息 */}
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="上月抄表时间">
+              <input type="date" className="w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-sm"
+                value={prevReadingDate}
+                onChange={(e) => setPrevReadingDate(e.target.value)} />
+            </Field>
+            <Field label="起始度数">
+              <NumInput value={prevReading} onChange={setPrevReading} placeholder="上月读数" />
+            </Field>
+          </div>
+
+          {/* 本月抄表信息 */}
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="本月抄表时间">
+              <input type="date" className="w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-sm"
+                value={currReadingDate}
+                onChange={(e) => setCurrReadingDate(e.target.value)} />
+            </Field>
+            <Field label="抄表度数">
+              <NumInput value={currReading} onChange={setCurrReading} placeholder="本月读数" />
+            </Field>
+          </div>
+
+          {/* 区间度数 */}
+          <Field label={
+            <div className="flex items-center gap-2">
+              <span>区间度数（kWh）</span>
+              <label className="flex items-center gap-1 text-[10px] text-slate-400 cursor-pointer">
+                <input type="checkbox" className="rounded" checked={calcKwh}
+                  onChange={(e) => setCalcKwh(e.target.checked)} />
+                自动计算
+              </label>
+            </div>
+          }>
+            <NumInput value={kwh} onChange={setKwh} placeholder="抄表度数 - 起始度数" disabled={calcKwh} />
+          </Field>
+
+          {/* 提示信息 */}
+          {calcKwh && prevReading && !currReading && (
+            <p className="text-xs text-amber-500">请填写抄表度数，否则区间度数将为 0</p>
+          )}
+          {calcKwh && !prevReading && currReading && (
+            <p className="text-xs text-amber-500">请填写起始度数，否则区间度数将为 0</p>
+          )}
+
+          {/* 显示计算结果 */}
+          {calcKwh && prevReading && currReading && (
+            <div className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+              区间度数 = {currReading} - {prevReading} = <span className="font-semibold">{parseFloat(currReading) - parseFloat(prevReading)}</span> kWh
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="outline" onClick={onClose}>取消</Button>
+            <Button className="bg-blue-600 hover:bg-blue-700" disabled={save.isPending || (!kwh && !prevReading && !currReading)} onClick={() => save.mutate()}>
+              {save.isPending ? "保存中…" : "保存"}
+            </Button>
           </div>
         </div>
       </DialogContent>

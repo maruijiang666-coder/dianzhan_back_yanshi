@@ -39,6 +39,30 @@ export const updateReceipt = (id: number, data: any) =>
 export const deleteReceipt = (id: number) =>
   client.delete(`/rent/receipts/${id}`).then(r => r.data);
 
+// 美团台账Excel数据
+export const getExcelData = (stationName?: string) =>
+  client.get("/rent/excel-data", { params: stationName ? { stationName } : {} }).then(r => r.data);
+
+// 付款记录（年度付款情况、发票）
+export const listPaymentRecords = (params?: { stationName?: string; brandId?: number }) =>
+  client.get("/rent/payment-records", { params }).then(r => r.data);
+
+export const upsertPaymentRecord = (data: any) =>
+  client.post("/rent/payment-records", data).then(r => r.data);
+
+export const deletePaymentRecord = (id: number) =>
+  client.delete(`/rent/payment-records/${id}`).then(r => r.data);
+
+// 收款记录（年度收款情况、进项成本）
+export const listIncomeRecords = (params?: { stationName?: string; brandId?: number }) =>
+  client.get("/rent/income-records", { params }).then(r => r.data);
+
+export const upsertIncomeRecord = (data: any) =>
+  client.post("/rent/income-records", data).then(r => r.data);
+
+export const deleteIncomeRecord = (id: number) =>
+  client.delete(`/rent/income-records/${id}`).then(r => r.data);
+
 // 运营费用
 export const listExpenses = (params?: { stationId?: number; period?: string }) =>
   client.get("/rent/expenses", { params }).then(r => r.data);

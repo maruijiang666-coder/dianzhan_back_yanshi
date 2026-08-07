@@ -17,3 +17,6 @@ export const deleteStation = (id: number) =>
 
 export const getStationMeterView = (id: number, period?: string) =>
   client.get(`/stations/${id}/meter-view`, { params: { period } }).then(r => r.data);
+
+export const getStationLocations = (status?: string) =>
+  client.get("/stations/locations", { params: { status } }).then(r => r.data);

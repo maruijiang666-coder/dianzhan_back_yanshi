@@ -3,23 +3,46 @@ from ..infra.database import get_connection, get_dict_cursor
 
 # ─── 分红配置 ───────────────────────────────────────────────
 
-def list_shareholder_configs(station_id: int = None):
+def list_shareholder_configs(station_id: int = None, brand_id: int = None):
     conn = get_connection()
     cur = get_dict_cursor(conn)
     try:
         conditions, values = [], []
         if station_id:
             conditions.append("c.station_id = %s"); values.append(station_id)
+        if brand_id:
+            conditions.append("c.brand_id = %s"); values.append(brand_id)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cur.execute(f"""
-            SELECT c.*, sh.name as shareholder_name, s.name as station_name
+            SELECT c.*, sh.name as shareholder_name, s.name as station_name,
+                   b.name as brand_name
             FROM station_shareholder_configs c
             LEFT JOIN shareholders sh ON c.shareholder_id = sh.id
             LEFT JOIN stations s ON c.station_id = s.id
+            LEFT JOIN brands b ON c.brand_id = b.id
             {where}
             ORDER BY c.id
         """, values)
-        return cur.fetchall()
+        results = cur.fetchall()
+
+        # 如果指定了站点但没有找到配置，查找同一场地方下其他站点的配置
+        if station_id and not results:
+            cur.execute("""
+                SELECT c.*, sh.name as shareholder_name, s.name as station_name,
+                       b.name as brand_name
+                FROM station_shareholder_configs c
+                LEFT JOIN shareholders sh ON c.shareholder_id = sh.id
+                LEFT JOIN stations s ON c.station_id = s.id
+                LEFT JOIN brands b ON c.brand_id = b.id
+                WHERE c.station_id IN (
+                    SELECT s2.id FROM stations s2
+                    WHERE s2.landlord_id = (SELECT landlord_id FROM stations WHERE id = %s)
+                )
+                ORDER BY c.id
+            """, (station_id,))
+            results = cur.fetchall()
+
+        return results
     finally:
         cur.close()
         conn.close()
@@ -29,25 +52,39 @@ def save_shareholder_config(data: dict):
     conn = get_connection()
     cur = get_dict_cursor(conn)
     try:
+        brand_id = data.get("brandId")
+        station_id = data.get("stationId")
+        shareholder_id = data.get("shareholderId")
+        # brand_id 可空（NULL=整个场地）；用 COALESCE 统一匹配部分唯一索引
         cur.execute("""
-            INSERT INTO station_shareholder_configs
-            (station_id, shareholder_id, mode, ratio, fixed_amount, settlement_period, start_date, end_date, remark)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (station_id, shareholder_id)
-            DO UPDATE SET mode = EXCLUDED.mode, ratio = EXCLUDED.ratio,
-                          fixed_amount = EXCLUDED.fixed_amount,
-                          settlement_period = EXCLUDED.settlement_period,
-                          start_date = EXCLUDED.start_date,
-                          end_date = EXCLUDED.end_date,
-                          remark = EXCLUDED.remark
-            RETURNING *
-        """, (
-            data.get("stationId"), data.get("shareholderId"),
+            SELECT id FROM station_shareholder_configs
+            WHERE station_id = %s AND shareholder_id = %s
+              AND COALESCE(brand_id, 0) = COALESCE(%s, 0)
+        """, (station_id, shareholder_id, brand_id))
+        existing = cur.fetchone()
+
+        fields = (
             data.get("mode"), data.get("ratio"),
             data.get("fixedAmount"), data.get("settlementPeriod", "月"),
             data.get("startDate"), data.get("endDate"),
             data.get("remark")
-        ))
+        )
+        if existing:
+            cur.execute("""
+                UPDATE station_shareholder_configs SET
+                    mode = %s, ratio = %s, fixed_amount = %s,
+                    settlement_period = %s, start_date = %s, end_date = %s,
+                    remark = %s
+                WHERE id = %s
+                RETURNING *
+            """, (*fields, existing["id"]))
+        else:
+            cur.execute("""
+                INSERT INTO station_shareholder_configs
+                (station_id, shareholder_id, brand_id, mode, ratio, fixed_amount, settlement_period, start_date, end_date, remark)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
+            """, (station_id, shareholder_id, brand_id, *fields))
         conn.commit()
         return cur.fetchone()
     finally:
@@ -67,19 +104,23 @@ def delete_shareholder_config(config_id: int):
         conn.close()
 
 
-def list_introducer_configs(station_id: int = None):
+def list_introducer_configs(station_id: int = None, brand_id: int = None):
     conn = get_connection()
     cur = get_dict_cursor(conn)
     try:
         conditions, values = [], []
         if station_id:
             conditions.append("c.station_id = %s"); values.append(station_id)
+        if brand_id:
+            conditions.append("c.brand_id = %s"); values.append(brand_id)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cur.execute(f"""
-            SELECT c.*, i.name as introducer_name, s.name as station_name
+            SELECT c.*, i.name as introducer_name, s.name as station_name,
+                   b.name as brand_name
             FROM station_introducer_configs c
             LEFT JOIN introducers i ON c.introducer_id = i.id
             LEFT JOIN stations s ON c.station_id = s.id
+            LEFT JOIN brands b ON c.brand_id = b.id
             {where}
             ORDER BY c.id
         """, values)
@@ -93,27 +134,40 @@ def save_introducer_config(data: dict):
     conn = get_connection()
     cur = get_dict_cursor(conn)
     try:
+        brand_id = data.get("brandId")
+        station_id = data.get("stationId")
+        introducer_id = data.get("introducerId")
+        # brand_id 可空（NULL=整个场地）；用 COALESCE 统一匹配部分唯一索引
         cur.execute("""
-            INSERT INTO station_introducer_configs
-            (station_id, introducer_id, mode, ratio, fixed_amount, settlement_period, count_as_cost, start_date, end_date, remark)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (station_id, introducer_id)
-            DO UPDATE SET mode = EXCLUDED.mode, ratio = EXCLUDED.ratio,
-                          fixed_amount = EXCLUDED.fixed_amount,
-                          settlement_period = EXCLUDED.settlement_period,
-                          count_as_cost = EXCLUDED.count_as_cost,
-                          start_date = EXCLUDED.start_date,
-                          end_date = EXCLUDED.end_date,
-                          remark = EXCLUDED.remark
-            RETURNING *
-        """, (
-            data.get("stationId"), data.get("introducerId"),
+            SELECT id FROM station_introducer_configs
+            WHERE station_id = %s AND introducer_id = %s
+              AND COALESCE(brand_id, 0) = COALESCE(%s, 0)
+        """, (station_id, introducer_id, brand_id))
+        existing = cur.fetchone()
+
+        fields = (
             data.get("mode"), data.get("ratio"),
             data.get("fixedAmount"), data.get("settlementPeriod", "月"),
             data.get("countAsCost", False),
             data.get("startDate"), data.get("endDate"),
             data.get("remark")
-        ))
+        )
+        if existing:
+            cur.execute("""
+                UPDATE station_introducer_configs SET
+                    mode = %s, ratio = %s, fixed_amount = %s,
+                    settlement_period = %s, count_as_cost = %s,
+                    start_date = %s, end_date = %s, remark = %s
+                WHERE id = %s
+                RETURNING *
+            """, (*fields, existing["id"]))
+        else:
+            cur.execute("""
+                INSERT INTO station_introducer_configs
+                (station_id, introducer_id, brand_id, mode, ratio, fixed_amount, settlement_period, count_as_cost, start_date, end_date, remark)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
+            """, (station_id, introducer_id, brand_id, *fields))
         conn.commit()
         return cur.fetchone()
     finally:
@@ -183,10 +237,12 @@ def get_shares(dividend_id: int):
     cur = get_dict_cursor(conn)
     try:
         cur.execute("""
-            SELECT ds.*, sh.name as shareholder_name, i.name as introducer_name
+            SELECT ds.*, sh.name as shareholder_name, i.name as introducer_name,
+                   b.name as brand_name
             FROM dividend_shares ds
             LEFT JOIN shareholders sh ON ds.shareholder_id = sh.id
             LEFT JOIN introducers i ON ds.introducer_id = i.id
+            LEFT JOIN brands b ON ds.brand_id = b.id
             WHERE ds.dividend_id = %s
         """, (dividend_id,))
         return cur.fetchall()
@@ -228,12 +284,12 @@ def create_share(dividend_id: int, data: dict):
     try:
         cur.execute("""
             INSERT INTO dividend_shares
-            (dividend_id, introducer_id, shareholder_id, mode, ratio, fixed_amount, amount, remark)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            (dividend_id, introducer_id, shareholder_id, brand_id, mode, ratio, fixed_amount, amount, remark)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
         """, (
             dividend_id,
-            data.get("introducerId"), data.get("shareholderId"),
+            data.get("introducerId"), data.get("shareholderId"), data.get("brandId"),
             data.get("mode"), data.get("ratio"),
             data.get("fixedAmount"), data.get("amount"), data.get("remark")
         ))
@@ -252,6 +308,44 @@ def update_status(record_id: int, status: str):
             "UPDATE dividend_records SET status = %s, updated_at = NOW() WHERE id = %s",
             (status, record_id)
         )
+        conn.commit()
+        return True
+    finally:
+        cur.close()
+        conn.close()
+
+
+def update_record(record_id: int, data: dict):
+    """更新分红记录的财务数据"""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE dividend_records SET
+                elec_income = %s, rent_income = %s, total_income = %s,
+                elec_cost = %s, rent_cost = %s, op_expense = %s,
+                biz_dividend_cost = %s, total_cost = %s, profit = %s,
+                updated_at = NOW()
+            WHERE id = %s
+        """, (
+            data.get("elecIncome"), data.get("rentIncome"), data.get("totalIncome"),
+            data.get("elecCost"), data.get("rentCost"), data.get("opExpense"),
+            data.get("bizDividendCost"), data.get("totalCost"), data.get("profit"),
+            record_id
+        ))
+        conn.commit()
+        return True
+    finally:
+        cur.close()
+        conn.close()
+
+
+def delete_shares(record_id: int):
+    """删除分红记录的所有分红明细"""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM dividend_shares WHERE dividend_id = %s", (record_id,))
         conn.commit()
         return True
     finally:
@@ -286,11 +380,13 @@ def get_shareholder_summary(shareholder_id: int = None, period: str = None):
         cur.execute(f"""
             SELECT ds.shareholder_id, sh.name as shareholder_name, d.period,
                    d.station_id, s.name as station_name, d.type, d.status, d.settlement_date,
+                   ds.brand_id, b.name as brand_name,
                    ds.mode, ds.ratio, ds.fixed_amount, ds.amount
             FROM dividend_shares ds
             JOIN dividend_records d ON ds.dividend_id = d.id
             LEFT JOIN shareholders sh ON ds.shareholder_id = sh.id
             LEFT JOIN stations s ON d.station_id = s.id
+            LEFT JOIN brands b ON ds.brand_id = b.id
             {where}
             ORDER BY d.period DESC, d.station_id
         """, values)
@@ -314,11 +410,13 @@ def get_introducer_summary(introducer_id: int = None, period: str = None):
         cur.execute(f"""
             SELECT ds.introducer_id, i.name as introducer_name, d.period,
                    d.station_id, s.name as station_name, d.type, d.status,
+                   ds.brand_id, b.name as brand_name,
                    ds.mode, ds.ratio, ds.fixed_amount, ds.amount
             FROM dividend_shares ds
             JOIN dividend_records d ON ds.dividend_id = d.id
             LEFT JOIN introducers i ON ds.introducer_id = i.id
             LEFT JOIN stations s ON d.station_id = s.id
+            LEFT JOIN brands b ON ds.brand_id = b.id
             {where}
             ORDER BY d.period DESC, d.station_id
         """, values)

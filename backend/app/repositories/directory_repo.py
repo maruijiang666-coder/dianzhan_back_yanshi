@@ -64,8 +64,23 @@ def update_brand(brand_id: int, name: str = None, contact: str = None, remark: s
 
 def delete_brand(brand_id: int):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = get_dict_cursor(conn)
     try:
+        # 检查是否有关联数据（只检查确定存在的表）
+        refs = []
+        check_tables = ["meters", "contracts", "rent_incomes"]
+        for table in check_tables:
+            try:
+                cur.execute(f"SELECT COUNT(*) as cnt FROM {table} WHERE brand_id = %s", (brand_id,))
+                cnt = cur.fetchone()["cnt"]
+                if cnt > 0:
+                    refs.append(f"{table}({cnt}条)")
+            except Exception:
+                conn.rollback()  # 回滚失败的事务，否则后续SQL会报错
+                pass  # 表不存在则跳过
+        if refs:
+            raise ValueError(f"该品牌被以下数据引用，无法删除：{', '.join(refs)}")
+
         cur.execute("DELETE FROM brands WHERE id = %s", (brand_id,))
         conn.commit()
         return cur.rowcount > 0
@@ -126,8 +141,19 @@ def update_entity(entity_id: int, name: str = None, short_name: str = None, rema
 
 def delete_entity(entity_id: int):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = get_dict_cursor(conn)
     try:
+        # 级联删除关联数据（先删子表，再删主表）
+        cascade_tables = ["entity_brands", "meters"]
+        deleted = []
+        for table in cascade_tables:
+            try:
+                cur.execute(f"DELETE FROM {table} WHERE entity_id = %s", (entity_id,))
+                if cur.rowcount > 0:
+                    deleted.append(f"{table}({cur.rowcount}条)")
+            except Exception:
+                conn.rollback()
+
         cur.execute("DELETE FROM entities WHERE id = %s", (entity_id,))
         conn.commit()
         return cur.rowcount > 0

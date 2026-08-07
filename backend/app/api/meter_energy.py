@@ -181,6 +181,59 @@ async def get_station_energy(
         conn.close()
 
 
+@router.post("/readings")
+async def save_meter_reading(data: dict):
+    """手动录入/更新电表月度读数"""
+    address = data.get("address")
+    month_period = data.get("monthPeriod")
+    kwh = data.get("kwh")
+    prev_reading_date = data.get("prevReadingDate")
+    prev_reading = data.get("prevReading")
+    curr_reading_date = data.get("currReadingDate")
+    curr_reading = data.get("currReading")
+
+    if not address or not month_period:
+        raise HTTPException(400, "address 和 monthPeriod 必填")
+
+    # 如果提供了起始度数和抄表度数，自动计算区间度数
+    if kwh is None and prev_reading is not None and curr_reading is not None:
+        kwh = float(curr_reading) - float(prev_reading)
+    elif kwh is not None:
+        kwh = float(kwh)
+    else:
+        kwh = 0
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO meter_monthly (address, month_period, kwh, prev_reading_date, prev_reading, curr_reading_date, curr_reading, synced_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (address, month_period)
+            DO UPDATE SET
+                kwh = EXCLUDED.kwh,
+                prev_reading_date = EXCLUDED.prev_reading_date,
+                prev_reading = EXCLUDED.prev_reading,
+                curr_reading_date = EXCLUDED.curr_reading_date,
+                curr_reading = EXCLUDED.curr_reading,
+                synced_at = NOW()
+        """, (address, month_period, kwh, prev_reading_date, prev_reading, curr_reading_date, curr_reading))
+        conn.commit()
+        return {
+            "ok": True,
+            "address": address,
+            "monthPeriod": month_period,
+            "kwh": kwh,
+            "prevReadingDate": prev_reading_date,
+            "prevReading": prev_reading,
+            "currReadingDate": curr_reading_date,
+            "currReading": curr_reading,
+        }
+    finally:
+        cur.close()
+        conn.close()
+
+
 @router.get("/sync-logs")
 async def get_sync_logs(limit: int = 20):
     """获取同步日志"""

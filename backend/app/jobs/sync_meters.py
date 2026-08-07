@@ -299,6 +299,27 @@ async def sync_monthly_data():
             cur.execute("SELECT device_id, address FROM meter_devices")
             device_map = {str(row[0]): row[1] for row in cur.fetchall()}
 
+            def parse_reading_fields(item):
+                """从 raw_data 中解析起始/抄表度数和时间"""
+                prev_reading = None
+                prev_reading_date = None
+                curr_reading = None
+                curr_reading_date = None
+                # s: 起始度数, e: 抄表度数, st: 起始时间, et: 抄表时间
+                s = item.get("s")
+                if isinstance(s, list) and len(s) > 0:
+                    prev_reading = s[0]
+                e = item.get("e")
+                if isinstance(e, list) and len(e) > 0:
+                    curr_reading = e[0]
+                st = item.get("st")
+                if st:
+                    prev_reading_date = st.replace("/", "-").split(" ")[0]
+                et = item.get("et")
+                if et:
+                    curr_reading_date = et.replace("/", "-").split(" ")[0]
+                return prev_reading, prev_reading_date, curr_reading, curr_reading_date
+
             # 兼容两种返回格式
             if isinstance(data, dict) and "data" in data:
                 for period_key, items in data["data"].items():
@@ -310,12 +331,17 @@ async def sync_monthly_data():
                             continue
                         address = item.get("address") or device_map.get(device_id, "")
                         parsed = parse_kwh_data(item)
+                        prev_reading, prev_reading_date, curr_reading, curr_reading_date = parse_reading_fields(item)
                         cur.execute("""
-                            INSERT INTO meter_monthly (address, month_period, kwh, raw_data, synced_at)
-                            VALUES (%s, %s, %s, %s::jsonb, NOW())
+                            INSERT INTO meter_monthly (address, month_period, kwh, raw_data, synced_at,
+                                prev_reading, prev_reading_date, curr_reading, curr_reading_date)
+                            VALUES (%s, %s, %s, %s::jsonb, NOW(), %s, %s, %s, %s)
                             ON CONFLICT (address, month_period) DO UPDATE SET
-                                kwh = EXCLUDED.kwh, raw_data = EXCLUDED.raw_data, synced_at = NOW()
-                        """, (address, period_key, parsed["total"], json.dumps(item, ensure_ascii=False)))
+                                kwh = EXCLUDED.kwh, raw_data = EXCLUDED.raw_data, synced_at = NOW(),
+                                prev_reading = EXCLUDED.prev_reading, prev_reading_date = EXCLUDED.prev_reading_date,
+                                curr_reading = EXCLUDED.curr_reading, curr_reading_date = EXCLUDED.curr_reading_date
+                        """, (address, period_key, parsed["total"], json.dumps(item, ensure_ascii=False),
+                              prev_reading, prev_reading_date, curr_reading, curr_reading_date))
                         synced += 1
             elif isinstance(data, list):
                 for p in data:
@@ -324,12 +350,17 @@ async def sync_monthly_data():
                         address = m.get("meterNo", "")
                         if not address:
                             continue
+                        prev_reading, prev_reading_date, curr_reading, curr_reading_date = parse_reading_fields(m)
                         cur.execute("""
-                            INSERT INTO meter_monthly (address, month_period, kwh, raw_data, synced_at)
-                            VALUES (%s, %s, %s, %s::jsonb, NOW())
+                            INSERT INTO meter_monthly (address, month_period, kwh, raw_data, synced_at,
+                                prev_reading, prev_reading_date, curr_reading, curr_reading_date)
+                            VALUES (%s, %s, %s, %s::jsonb, NOW(), %s, %s, %s, %s)
                             ON CONFLICT (address, month_period) DO UPDATE SET
-                                kwh = EXCLUDED.kwh, raw_data = EXCLUDED.raw_data, synced_at = NOW()
-                        """, (address, month_period, m.get("kwh"), json.dumps(m, ensure_ascii=False)))
+                                kwh = EXCLUDED.kwh, raw_data = EXCLUDED.raw_data, synced_at = NOW(),
+                                prev_reading = EXCLUDED.prev_reading, prev_reading_date = EXCLUDED.prev_reading_date,
+                                curr_reading = EXCLUDED.curr_reading, curr_reading_date = EXCLUDED.curr_reading_date
+                        """, (address, month_period, m.get("kwh"), json.dumps(m, ensure_ascii=False),
+                              prev_reading, prev_reading_date, curr_reading, curr_reading_date))
                         synced += 1
 
             conn.commit()

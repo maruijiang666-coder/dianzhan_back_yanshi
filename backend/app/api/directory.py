@@ -30,8 +30,11 @@ async def update_brand(brand_id: int, data: dict):
 
 @router.delete("/brands/{brand_id}")
 async def delete_brand(brand_id: int):
-    directory_repo.delete_brand(brand_id)
-    return {"ok": True}
+    try:
+        directory_repo.delete_brand(brand_id)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ─── 公司主体 ───────────────────────────────────────────────
@@ -60,8 +63,11 @@ async def update_entity(entity_id: int, data: dict):
 
 @router.delete("/entities/{entity_id}")
 async def delete_entity(entity_id: int):
-    directory_repo.delete_entity(entity_id)
-    return {"ok": True}
+    try:
+        directory_repo.delete_entity(entity_id)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ─── 场地方 ─────────────────────────────────────────────────

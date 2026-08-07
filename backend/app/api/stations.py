@@ -10,6 +10,12 @@ async def list_stations(landlordId: int = None, keyword: str = None, page: int =
     return station_repo.list_stations(landlord_id=landlordId, keyword=keyword, page=page, page_size=pageSize)
 
 
+@router.get("/locations")
+async def get_station_locations(status: str = None):
+    """获取所有站点的位置信息（用于小程序地图标注）"""
+    return station_repo.get_station_locations(status=status)
+
+
 @router.get("/{station_id}")
 async def get_station(station_id: int):
     station = station_repo.get_station(station_id)
@@ -150,6 +156,9 @@ async def get_station_meter_view(station_id: int, period: str = None):
                 rent_receipts.append(r)
 
     # 从contracts获取租金数据
+    # 收集当前站点的电表品牌ID，用于过滤品牌方合同
+    station_brand_ids = set(m.get("brand_id") for m in meters if m.get("brand_id"))
+
     contract_rent = {
         "cost": [],      # 场地合同（付款）
         "income": [],    # 品牌方合同（收款）
@@ -167,6 +176,9 @@ async def get_station_meter_view(station_id: int, period: str = None):
                 "payStatus": c.get("pay_status"),
             })
         elif c.get("contract_type") == "品牌方合同":
+            # 只保留当前站点品牌匹配的合同
+            if c.get("brand_id") and c["brand_id"] not in station_brand_ids:
+                continue
             contract_rent["income"].append({
                 "id": c.get("id"),
                 "brandName": c.get("brand_name"),

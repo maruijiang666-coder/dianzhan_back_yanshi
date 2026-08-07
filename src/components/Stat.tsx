@@ -36,6 +36,7 @@ export function StatusBadge({ status }: { status: string }) {
     正常: "bg-emerald-50 text-emerald-700 ring-emerald-200",
     临期: "bg-amber-50 text-amber-700 ring-amber-200",
     已到期: "bg-rose-50 text-rose-700 ring-rose-200",
+    提前结束: "bg-violet-50 text-violet-700 ring-violet-200",
     已结算: "bg-emerald-50 text-emerald-700 ring-emerald-200",
     未结算: "bg-amber-50 text-amber-700 ring-amber-200",
     运营中: "bg-emerald-50 text-emerald-700 ring-emerald-200",

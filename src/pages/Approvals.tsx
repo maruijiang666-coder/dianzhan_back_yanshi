@@ -141,6 +141,83 @@ function FlowTimeline({ flowNodes, records, status, currentNode }: { flowNodes: 
   );
 }
 
+// ─── 站点费用审批详情 ───
+function StationApprovalDetail({ req }: { req: any }) {
+  // 从 reason 中解析明细信息（如果有的话）
+  const reason = req.reason || "";
+
+  return (
+    <div className="space-y-3">
+      {/* 基本信息 */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="rounded-lg border bg-slate-50 px-3 py-2">
+          <div className="text-[10px] text-slate-400">站点</div>
+          <div className="text-xs font-semibold text-slate-700">{req.station_name || `站点#${req.station_id}`}</div>
+        </div>
+        <div className="rounded-lg border bg-slate-50 px-3 py-2">
+          <div className="text-[10px] text-slate-400">费用月份</div>
+          <div className="text-xs font-semibold text-slate-700">{req.period || "-"}</div>
+        </div>
+        <div className="rounded-lg border bg-blue-50 px-3 py-2">
+          <div className="text-[10px] text-blue-500">审批总金额</div>
+          <div className="text-sm font-bold text-blue-700 tabular-nums">{fmtMoney(req.amount)}</div>
+        </div>
+      </div>
+
+      {/* 费用类型标签 */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-slate-500">审批类型：</span>
+        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+          req.biz_type === "电费付款" ? "bg-amber-100 text-amber-700" :
+          req.biz_type === "场地费付款" ? "bg-orange-100 text-orange-700" :
+          "bg-blue-100 text-blue-700"
+        }`}>
+          {req.biz_type}
+        </span>
+      </div>
+
+      {/* 费用构成明细 */}
+      {(req.electricity_amount || req.rent_amount) && (
+        <div className="rounded-lg border overflow-hidden">
+          <div className="bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-600 border-b">费用构成</div>
+          <div className="p-3 space-y-2">
+            {req.electricity_amount && (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-amber-400"></div>
+                  <span className="text-xs text-slate-600">电费成本</span>
+                </div>
+                <span className="text-xs font-semibold text-rose-600 tabular-nums">{fmtMoney(req.electricity_amount)}</span>
+              </div>
+            )}
+            {req.rent_amount && (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-orange-400"></div>
+                  <span className="text-xs text-slate-600">场地租金</span>
+                </div>
+                <span className="text-xs font-semibold text-rose-600 tabular-nums">{fmtMoney(req.rent_amount)}</span>
+              </div>
+            )}
+            <div className="border-t pt-2 flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-700">合计</span>
+              <span className="text-sm font-bold text-blue-600 tabular-nums">{fmtMoney(req.amount)}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 详细说明 */}
+      {reason && (
+        <div className="rounded-lg border bg-white px-3 py-2">
+          <div className="text-[10px] text-slate-400 mb-1">详细说明</div>
+          <div className="text-xs text-slate-600 whitespace-pre-wrap">{reason}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── 分红审批详情 ───
 function DividendDetail({ req }: { req: any }) {
   const { data: dividendPreview, isLoading } = useQuery({
@@ -388,10 +465,15 @@ function ApprovalDetail({ req }: { req: any }) {
         {req.reason && (
           <div className="rounded-lg border bg-white px-3 py-2 col-span-2">
             <div className="text-[10px] text-slate-400">事由说明</div>
-            <div className="text-xs text-slate-600">{req.reason}</div>
+            <div className="text-xs text-slate-600 whitespace-pre-wrap">{req.reason}</div>
           </div>
         )}
       </div>
+
+      {/* 站点费用审批详情 */}
+      {(req.biz_type === "电费付款" || req.biz_type === "场地费付款" || req.biz_type === "电费+场地费") && (
+        <StationApprovalDetail req={req} />
+      )}
 
       {/* 分红审批特有详情 */}
       {req.biz_type === "分红审批" && req.dividend_record_id && (

@@ -2,16 +2,17 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createStation, updateStation } from "@/api/stations";
 import { listBrands, listEntities, listLandlords } from "@/api/directory";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Field, NumInput, TextInput, SelectInput } from "./fields";
 import { numOrNull, strOrNull } from "@/lib/format";
 import { toast } from "sonner";
+import { MapPicker } from "./MapPicker";
 
 export function StationForm(props: { open: boolean; onClose: () => void; record?: any | null }) {
   const blank = {
     name: "", code: "", region: "", address: "", landlordId: "",
-    companyShare: "", status: "运营中", remark: "",
+    companyShare: "", status: "运营中", latitude: "", longitude: "", remark: "",
   };
   const [f, setF] = useState(blank);
   const queryClient = useQueryClient();
@@ -26,7 +27,10 @@ export function StationForm(props: { open: boolean; onClose: () => void; record?
       setF({
         name: s.name ?? "", code: s.code ?? "", region: s.region ?? "", address: s.address ?? "",
         landlordId: s.landlord_id ? String(s.landlord_id) : "",
-        companyShare: s.company_share ?? "", status: s.status ?? "运营中", remark: s.remark ?? "",
+        companyShare: s.company_share ?? "", status: s.status ?? "运营中",
+        latitude: s.latitude ? String(s.latitude) : "",
+        longitude: s.longitude ? String(s.longitude) : "",
+        remark: s.remark ?? "",
       });
     } else setF(blank);
   }, [props.open, props.record]);
@@ -49,16 +53,28 @@ export function StationForm(props: { open: boolean; onClose: () => void; record?
       name: f.name.trim(), code: strOrNull(f.code), region: strOrNull(f.region), address: strOrNull(f.address),
       landlordId: numOrNull(f.landlordId),
       companyShare: numOrNull(f.companyShare), status: f.status,
+      latitude: numOrNull(f.latitude), longitude: numOrNull(f.longitude),
       remark: strOrNull(f.remark),
     };
     if (props.record) update.mutate({ ...payload, id: props.record.id });
     else create.mutate(payload);
   };
 
+  const handleLocationChange = (lat: number, lng: number) => {
+    setF((prev) => ({
+      ...prev,
+      latitude: String(lat),
+      longitude: String(lng),
+    }));
+  };
+
   return (
     <Dialog open={props.open} onOpenChange={(o) => !o && props.onClose()}>
       <DialogContent className="max-w-2xl">
-        <DialogHeader><DialogTitle>{props.record ? "编辑站点" : "新增站点"}</DialogTitle></DialogHeader>
+        <DialogHeader>
+          <DialogTitle>{props.record ? "编辑站点" : "新增站点"}</DialogTitle>
+          <DialogDescription>填写站点信息，可在地图上标注位置</DialogDescription>
+        </DialogHeader>
         <div className="grid grid-cols-2 gap-4">
           <Field label="站点名称 *"><TextInput value={f.name} onChange={set("name")} /></Field>
           <Field label="站点编号"><TextInput value={f.code} onChange={set("code")} /></Field>
@@ -74,6 +90,16 @@ export function StationForm(props: { open: boolean; onClose: () => void; record?
               options={[{ value: "运营中", label: "运营中" }, { value: "筹建中", label: "筹建中" }, { value: "已关停", label: "已关停" }]} />
           </Field>
           <Field label="备注"><TextInput value={f.remark} onChange={set("remark")} /></Field>
+        </div>
+
+        <div className="mt-4">
+          <Field label="站点位置">
+            <MapPicker
+              latitude={f.latitude ? parseFloat(f.latitude) : null}
+              longitude={f.longitude ? parseFloat(f.longitude) : null}
+              onLocationChange={handleLocationChange}
+            />
+          </Field>
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="outline" onClick={props.onClose}>取消</Button>

@@ -1,16 +1,18 @@
 import { Fragment, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getStationBoard, getLandlordStationMonthly } from "@/api/overview";
 import { getStationMeterView } from "@/api/stations";
 import { listBrands } from "@/api/directory";
+import { submitStationApproval } from "@/api/approvals";
 import { Money, StatusBadge } from "@/components/Stat";
 import { Button } from "@/components/ui/button";
-import { inputCls } from "@/components/fields";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Field, NumInput, TextInput, SelectInput, inputCls } from "@/components/fields";
 import { StationForm } from "@/components/StationForm";
 import { MonthPicker } from "@/components/MonthPicker";
 import { exportXlsx } from "@/lib/export";
-import { fmtMoney, fmtNum, fmtPct, fmtDate } from "@/lib/format";
-import { Download, Search, ChevronDown, ChevronRight, ChevronLeft, MapPin, Gauge, ArrowLeft, Zap, Battery, Receipt, TrendingUp, Home, DollarSign, Activity, BarChart3 } from "lucide-react";
+import { fmtMoney, fmtNum, fmtPct, fmtDate, numOrNull, strOrNull } from "@/lib/format";
+import { Download, Search, ChevronDown, ChevronRight, ChevronLeft, MapPin, Gauge, ArrowLeft, Zap, Battery, Receipt, TrendingUp, Home, DollarSign, Activity, BarChart3, FileCheck2 } from "lucide-react";
 import { toast } from "sonner";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, PieChart, Pie, Cell } from "recharts";
 
@@ -37,12 +39,225 @@ function SectionCard({ icon: Icon, title, color, children }: { icon: any; title:
   );
 }
 
+// ─── 提交审核对话框 ───
+function SubmitApprovalDialog({ open, onClose, stationId, stationName, period, mv }: {
+  open: boolean; onClose: () => void; stationId: number; stationName: string; period: string; mv: any;
+}) {
+  const queryClient = useQueryClient();
+  const [approvalType, setApprovalType] = useState<"电费付款" | "场地费付款" | "电费+场地费">("电费+场地费");
+  const [applicant, setApplicant] = useState("");
+  const [reason, setReason] = useState("");
+
+  const s = mv?.summary || {};
+  const contractRent = mv?.contractRent || {};
+  const brandGroups = mv?.brandGroups || [];
+
+  // 计算电费金额
+  const electricityAmount = s.totalPayAmount || 0;
+
+  // 计算场地费金额
+  const rentContracts = contractRent.cost || [];
+  const rentAmount = rentContracts.reduce((sum: number, c: any) => sum + (c.monthlyRent || 0), 0);
+
+  // 根据选择计算总金额
+  const totalAmount = approvalType === "电费付款" ? electricityAmount
+    : approvalType === "场地费付款" ? rentAmount
+    : electricityAmount + rentAmount;
+
+  // 构建电费明细
+  const electricityDetails: any[] = [];
+  brandGroups.forEach((group: any) => {
+    group.meters?.forEach((meter: any) => {
+      if (meter.payAmount) {
+        electricityDetails.push({
+          brandName: group.brandName,
+          meterNo: meter.meterNo,
+          meterName: meter.meterName,
+          payKwh: meter.payKwh,
+          payUnitPrice: meter.payUnitPrice,
+          payAmount: meter.payAmount,
+        });
+      }
+    });
+  });
+
+  const save = useMutation({
+    mutationFn: submitStationApproval,
+    onSuccess: () => {
+      toast.success("审批单已提交");
+      queryClient.invalidateQueries({ queryKey: ["approvals"] });
+      onClose();
+    },
+    onError: (e: any) => toast.error(e.message || "提交失败"),
+  });
+
+  const submit = () => {
+    if (!applicant.trim()) { toast.error("请填写申请人"); return; }
+    if (totalAmount <= 0) { toast.error("审批金额必须大于0"); return; }
+
+    // 构建详细的审批理由
+    let detailReason = reason || "";
+    if (!detailReason) {
+      const parts = [];
+      if (approvalType !== "场地费付款" && electricityDetails.length > 0) {
+        const meterList = electricityDetails.map(d => `${d.meterNo}(${fmtMoney(d.payAmount)})`).join("、");
+        parts.push(`电费明细：${meterList}`);
+      }
+      if (approvalType !== "电费付款" && rentContracts.length > 0) {
+        const contractList = rentContracts.map((c: any) => `${c.partner || "场地"}(${fmtMoney(c.monthlyRent)})`).join("、");
+        parts.push(`场地费明细：${contractList}`);
+      }
+      detailReason = parts.join("；");
+    }
+
+    save.mutate({
+      stationId,
+      stationName,
+      period,
+      approvalType,
+      electricityAmount: approvalType !== "场地费付款" ? electricityAmount : undefined,
+      rentAmount: approvalType !== "电费付款" ? rentAmount : undefined,
+      totalAmount,
+      applicant: applicant.trim(),
+      reason: detailReason,
+    });
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <FileCheck2 className="h-5 w-5 text-blue-600" />
+            提交审核
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            <div>站点：<span className="font-medium">{stationName}</span></div>
+            <div>月份：<span className="font-medium">{period}</span></div>
+          </div>
+
+          <Field label="审批类型">
+            <SelectInput value={approvalType} onChange={(v) => setApprovalType(v as any)}
+              options={[
+                { value: "电费+场地费", label: "电费 + 场地费" },
+                { value: "电费付款", label: "仅电费" },
+                { value: "场地费付款", label: "仅场地费" },
+              ]} />
+          </Field>
+
+          {/* 电费明细 */}
+          {(approvalType === "电费付款" || approvalType === "电费+场地费") && (
+            <div className="rounded-lg border">
+              <div className="flex items-center justify-between border-b bg-rose-50 px-3 py-1.5">
+                <span className="text-xs font-semibold text-rose-700">电费成本明细</span>
+                <span className="text-xs font-bold text-rose-600">{fmtMoney(electricityAmount)}</span>
+              </div>
+              <div className="px-3 py-2">
+                {electricityDetails.length > 0 ? (
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-slate-500">
+                        <th className="pb-1 text-left font-medium">品牌/电表</th>
+                        <th className="pb-1 text-right font-medium">度数</th>
+                        <th className="pb-1 text-right font-medium">单价</th>
+                        <th className="pb-1 text-right font-medium">金额</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {electricityDetails.map((d, i) => (
+                        <tr key={i} className="border-t border-dashed">
+                          <td className="py-1">
+                            <div className="font-medium text-slate-700">{d.brandName}</div>
+                            <div className="text-[10px] text-slate-400">{d.meterNo} {d.meterName || ""}</div>
+                          </td>
+                          <td className="py-1 text-right tabular-nums">{fmtNum(d.payKwh)}</td>
+                          <td className="py-1 text-right tabular-nums">{d.payUnitPrice ? `${fmtNum(d.payUnitPrice)}元` : "-"}</td>
+                          <td className="py-1 text-right font-medium text-rose-600 tabular-nums">{fmtMoney(d.payAmount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="py-2 text-center text-xs text-slate-400">暂无电费数据</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 场地费明细 */}
+          {(approvalType === "场地费付款" || approvalType === "电费+场地费") && (
+            <div className="rounded-lg border">
+              <div className="flex items-center justify-between border-b bg-orange-50 px-3 py-1.5">
+                <span className="text-xs font-semibold text-orange-700">场地费明细</span>
+                <span className="text-xs font-bold text-orange-600">{fmtMoney(rentAmount)}</span>
+              </div>
+              <div className="px-3 py-2">
+                {rentContracts.length > 0 ? (
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-slate-500">
+                        <th className="pb-1 text-left font-medium">场地方</th>
+                        <th className="pb-1 text-right font-medium">年租金</th>
+                        <th className="pb-1 text-right font-medium">月租金</th>
+                        <th className="pb-1 text-right font-medium">付款方式</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rentContracts.map((c: any) => (
+                        <tr key={c.id} className="border-t border-dashed">
+                          <td className="py-1 font-medium text-slate-700">{c.partner || "-"}</td>
+                          <td className="py-1 text-right tabular-nums">{c.annualRent ? fmtMoney(c.annualRent) : "-"}</td>
+                          <td className="py-1 text-right font-medium text-orange-600 tabular-nums">{c.monthlyRent ? fmtMoney(c.monthlyRent) : "-"}</td>
+                          <td className="py-1 text-right text-slate-500">{c.payMethod || "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="py-2 text-center text-xs text-slate-400">暂无场地费数据</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 总计 */}
+          <div className="rounded-lg border-2 border-blue-200 bg-blue-50 px-3 py-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-blue-800">审批总金额</span>
+              <span className="text-lg font-bold text-blue-600">{fmtMoney(totalAmount)}</span>
+            </div>
+          </div>
+
+          <Field label="申请人 *">
+            <TextInput value={applicant} onChange={setApplicant} placeholder="请输入申请人姓名" />
+          </Field>
+
+          <Field label="备注">
+            <textarea className={`${inputCls} w-full`} rows={2} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="可填写审批说明（不填则自动生成明细）…" />
+          </Field>
+
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="outline" onClick={onClose}>取消</Button>
+            <Button className="bg-blue-600 hover:bg-blue-700" disabled={save.isPending} onClick={submit}>
+              {save.isPending ? "提交中…" : "提交审核"}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─── 站点电表详情 ───
 function StationMeterDetail({ stationId, period, onBack }: { stationId: number; period: string; onBack: () => void }) {
   const { data: mv, isLoading } = useQuery({
     queryKey: ["stationMeterView", stationId, period],
     queryFn: () => getStationMeterView(stationId, period),
   });
+
+  const [approvalOpen, setApprovalOpen] = useState(false);
 
   if (isLoading) return <div className="py-10 text-center text-slate-400">加载中…</div>;
   if (!mv) return <div className="py-10 text-center text-slate-400">加载失败</div>;
@@ -51,15 +266,30 @@ function StationMeterDetail({ stationId, period, onBack }: { stationId: number; 
 
   return (
     <div className="space-y-3">
-      {/* 返回按钮 + 站点名 */}
-      <div className="flex items-center gap-2">
-        <button onClick={onBack} className="flex items-center gap-1 text-xs text-slate-500 hover:text-emerald-600 transition-colors">
-          <ArrowLeft className="h-3.5 w-3.5" />
-          返回站点列表
-        </button>
-        <span className="text-sm font-semibold text-slate-800">{mv.stationName}</span>
-        <span className="text-xs text-slate-400">· {period}</span>
+      {/* 返回按钮 + 站点名 + 提交审核 */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <button onClick={onBack} className="flex items-center gap-1 text-xs text-slate-500 hover:text-emerald-600 transition-colors">
+            <ArrowLeft className="h-3.5 w-3.5" />
+            返回站点列表
+          </button>
+          <span className="text-sm font-semibold text-slate-800">{mv.stationName}</span>
+          <span className="text-xs text-slate-400">· {period}</span>
+        </div>
+        <Button size="sm" className="bg-blue-600 hover:bg-blue-700" onClick={() => setApprovalOpen(true)}>
+          <FileCheck2 className="mr-1 h-3.5 w-3.5" />提交审核
+        </Button>
       </div>
+
+      {/* 提交审核对话框 */}
+      <SubmitApprovalDialog
+        open={approvalOpen}
+        onClose={() => setApprovalOpen(false)}
+        stationId={stationId}
+        stationName={mv.stationName}
+        period={period}
+        mv={mv}
+      />
 
       {/* 站点汇总数据 */}
       {s.totalKwh != null && (
@@ -420,20 +650,24 @@ function ExpandedDetail({ landlordId, meters, stations, period, summary }: { lan
       {/* 站点列表 */}
       {stations.length > 0 && (
         <div>
-          <h4 className="mb-1.5 text-xs font-semibold text-slate-700">站点（{stations.length} 个）</h4>
+          <h4 className="mb-1.5 text-xs font-semibold text-slate-700">品牌方（{stations.length} 个）</h4>
           <div className="flex flex-wrap gap-2">
-            {stations.map((s: any) => (
-              <button
-                key={s.id}
-                onClick={() => setSelectedStationId(s.id)}
-                className="flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-left text-xs hover:border-emerald-400 hover:bg-emerald-50 transition-colors"
-              >
-                <div>
-                  <div className="font-medium text-slate-800">{s.name}</div>
-                  <div className="text-[11px] text-slate-400">占股 {fmtPct(s.company_share)} · {s.status}</div>
-                </div>
-              </button>
-            ))}
+            {stations.map((s: any) => {
+              // 提取品牌名：取 "-" 前面的部分，如 "台铃-螺狮湾站" → "台铃"
+              const brandName = s.name?.split(/[-—–]/)?.[0]?.trim() || s.name;
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => setSelectedStationId(s.id)}
+                  className="flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-left text-xs hover:border-emerald-400 hover:bg-emerald-50 transition-colors"
+                >
+                  <div>
+                    <div className="font-medium text-slate-800">{brandName}</div>
+                    <div className="text-[11px] text-slate-400">{s.name}</div>
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

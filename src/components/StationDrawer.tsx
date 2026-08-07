@@ -318,13 +318,14 @@ export function StationDrawer({ stationId, onClose }: { stationId: number; onClo
               <div className="overflow-x-auto rounded-lg border">
                 <table className="w-full text-xs">
                   <thead><tr className="border-b bg-slate-50">
-                    <th className={th}>股东</th><th className={th}>分红模式</th><th className={thR}>比例</th>
+                    <th className={th}>股东</th><th className={th}>品牌</th><th className={th}>分红模式</th><th className={thR}>比例</th>
                     <th className={thR}>固定金额</th><th className={th}>结算周期</th>
                   </tr></thead>
                   <tbody>
                     {d.shareholderConfigs.map((c: any) => (
                       <tr key={c.id} className="border-b last:border-0">
                         <td className="px-2.5 py-2 font-medium">{c.shareholder_name}</td>
+                        <td className="px-2.5 py-2">{c.brand_name || "全场"}</td>
                         <td className="px-2.5 py-2">{c.mode}</td>
                         <td className="px-2.5 py-2 text-right">{c.ratio ? fmtNum(c.ratio) : "-"}</td>
                         <td className="px-2.5 py-2 text-right">{c.fixed_amount ? fmtMoney(c.fixed_amount) : "-"}</td>

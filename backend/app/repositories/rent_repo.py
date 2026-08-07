@@ -340,3 +340,121 @@ def delete_expense(expense_id: int):
     finally:
         cur.close()
         conn.close()
+
+
+def get_expense_by_id(expense_id: int):
+    """根据ID获取运营费用"""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        cur.execute("SELECT * FROM operating_expenses WHERE id = %s", (expense_id,))
+        return cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ─── 付款记录（年度付款情况、发票）────────────────────────────
+
+def list_payment_records(station_name: str = None, brand_id: int = None):
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        conditions, values = [], []
+        if station_name:
+            conditions.append("station_name = %s"); values.append(station_name)
+        if brand_id:
+            conditions.append("brand_id = %s"); values.append(brand_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cur.execute(f"SELECT * FROM rent_payment_records {where} ORDER BY fiscal_year", values)
+        return cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def upsert_payment_record(data: dict):
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        cur.execute("""
+            INSERT INTO rent_payment_records (station_id, station_name, brand_id, fiscal_year, pay_status, invoice, remark)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (station_name, brand_id, fiscal_year)
+            DO UPDATE SET pay_status = EXCLUDED.pay_status, invoice = EXCLUDED.invoice,
+                          remark = EXCLUDED.remark, created_at = NOW()
+            RETURNING *
+        """, (
+            data.get("stationId"), data.get("stationName"), data.get("brandId"), data.get("fiscalYear"),
+            data.get("payStatus"), data.get("invoice"), data.get("remark")
+        ))
+        conn.commit()
+        return cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def delete_payment_record(record_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM rent_payment_records WHERE id = %s", (record_id,))
+        conn.commit()
+        return True
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ─── 收款记录（年度收款情况、进项成本）────────────────────────
+
+def list_income_records(station_name: str = None, brand_id: int = None):
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        conditions, values = [], []
+        if station_name:
+            conditions.append("station_name = %s"); values.append(station_name)
+        if brand_id:
+            conditions.append("brand_id = %s"); values.append(brand_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cur.execute(f"SELECT * FROM rent_income_records {where} ORDER BY fiscal_year", values)
+        return cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def upsert_income_record(data: dict):
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        cur.execute("""
+            INSERT INTO rent_income_records (station_id, station_name, brand_id, fiscal_year, income_status, input_cost, remark)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (station_name, brand_id, fiscal_year)
+            DO UPDATE SET income_status = EXCLUDED.income_status, input_cost = EXCLUDED.input_cost,
+                          remark = EXCLUDED.remark, created_at = NOW()
+            RETURNING *
+        """, (
+            data.get("stationId"), data.get("stationName"), data.get("brandId"), data.get("fiscalYear"),
+            data.get("incomeStatus"), data.get("inputCost"), data.get("remark")
+        ))
+        conn.commit()
+        return cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def delete_income_record(record_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM rent_income_records WHERE id = %s", (record_id,))
+        conn.commit()
+        return True
+    finally:
+        cur.close()
+        conn.close()

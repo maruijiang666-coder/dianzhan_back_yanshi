@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useLocation } from "react-router";
 import {
   LayoutDashboard, Building2, Zap, Home as HomeIcon, Tag, Landmark,
-  MapPin, Users, FileText, Gauge, FolderCog, BatteryCharging, FileCheck2,
+  MapPin, Users, FileText, Gauge, FolderCog, BatteryCharging, FileCheck2, Map,
 } from "lucide-react";
 
 const NAV = [
@@ -16,11 +16,12 @@ const NAV = [
   { to: "/contracts", label: "合同管理", icon: FileText },
   { to: "/approvals", label: "审批中心", icon: FileCheck2 },
   { to: "/meters", label: "智慧电表", icon: Gauge },
+  { to: "/station-map", label: "站点地图", icon: Map },
   { to: "/directory", label: "基础档案", icon: FolderCog },
 ];
 
 const TITLES: Record<string, string> = {
-  "/": "经营总览", "/stations": "站点数据", "/electricity": "电费台账", "/rent": "场租台账",
+  "/": "经营总览", "/stations": "站点数据", "/station-map": "站点地图", "/electricity": "电费台账", "/rent": "场租台账",
   "/brands": "品牌方看板", "/entities": "公司主体看板", "/landlords": "场地方（业主）看板",
   "/shareholders": "股东分红", "/contracts": "合同管理", "/approvals": "审批中心",
   "/meters": "智慧电表", "/directory": "基础档案",

@@ -4,96 +4,215 @@ import { listBrands } from "@/api/directory";
 import { listContracts } from "@/api/contracts";
 import { listMeters } from "@/api/meters";
 import { listCabinets } from "@/api/cabinets";
-import { StatusBadge } from "@/components/Stat";
+import { listElectricity } from "@/api/electricity";
+import { listIncomes } from "@/api/rent";
+import { StatusBadge, Money } from "@/components/Stat";
 import { Button } from "@/components/ui/button";
 import { inputCls } from "@/components/fields";
-import { exportXlsx } from "@/lib/export";
 import { fmtMoney, fmtNum, fmtDate } from "@/lib/format";
-import { Download, Search, ChevronDown, ChevronRight, Zap, FileText, Box, DollarSign } from "lucide-react";
+import {
+  Download, Search, ChevronDown, ChevronRight, Zap, FileText, Box,
+  DollarSign, Building2, ArrowDownCircle, ArrowUpCircle, TrendingUp, Receipt,
+} from "lucide-react";
 import { toast } from "sonner";
 
+// ─── 类型 ───
+interface SiteData {
+  landlordId: number;
+  landlordName: string;
+  stationIds: number[];
+  // 合同
+  brandContract: any | null;   // 品牌方合同（收入侧）
+  venueContract: any | null;   // 场地合同（成本侧）
+  // 电表
+  meters: any[];
+  cabinetCount: number;
+  // 电费
+  elecPayKwh: number;
+  elecPayAmount: number;
+  elecCollectKwh: number;
+  elecCollectAmount: number;
+  elecCollectNet: number;
+  elecProfit: number;
+  elecPayStatus: string;
+  elecCollectStatus: string;
+  // 租金收入
+  rentIncome: any | null;
+}
+
 export default function Brands() {
+  const currentYear = new Date().getFullYear();
   const [keyword, setKeyword] = useState("");
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [year, setYear] = useState(currentYear);
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
 
+  // ─── 数据加载 ───
   const brands = useQuery({ queryKey: ["brands"], queryFn: listBrands });
   const contracts = useQuery({ queryKey: ["contracts"], queryFn: () => listContracts() });
   const meters = useQuery({ queryKey: ["meters"], queryFn: () => listMeters() });
   const cabinets = useQuery({ queryKey: ["allCabinets"], queryFn: () => listCabinets() });
+  const electricity = useQuery({
+    queryKey: ["electricity", selectedMonth],
+    queryFn: () => listElectricity({ period: selectedMonth || undefined }),
+  });
+  const rentIncomes = useQuery({ queryKey: ["rentIncomes"], queryFn: () => listIncomes() });
 
+  // ─── 年份选项 ───
+  const yearOptions = useMemo(() => {
+    const years = new Set<number>();
+    for (let y = currentYear - 5; y <= currentYear + 5; y++) years.add(y);
+    for (const c of contracts.data ?? []) {
+      if (c.start_date) years.add(new Date(c.start_date).getFullYear());
+      if (c.end_date) years.add(new Date(c.end_date).getFullYear());
+    }
+    return [...years].sort((a, b) => b - a);
+  }, [contracts.data, currentYear]);
+
+  // ─── 品牌聚合 ───
   const brandData = useMemo(() => {
     const brandList = brands.data ?? [];
     const contractList = contracts.data ?? [];
     const meterList = meters.data ?? [];
     const cabinetList = cabinets.data ?? [];
+    const elecList = electricity.data ?? [];
+    const incomeList = rentIncomes.data ?? [];
 
     return brandList
       .filter((b: any) => !keyword || b.name?.includes(keyword))
       .map((brand: any) => {
         // 该品牌的合同
         const brandContracts = contractList.filter((c: any) => c.brand_id === brand.id && c.contract_type === "品牌方合同");
+        const venueContracts = contractList.filter((c: any) => c.contract_type === "场地合同");
+
+        // 按年份过滤合同
+        const yearBrandContracts = brandContracts.filter((c: any) => {
+          if (!year) return true;
+          const start = c.start_date ? new Date(c.start_date) : null;
+          const end = c.early_end_date ? new Date(c.early_end_date) : (c.end_date ? new Date(c.end_date) : null);
+          if (!start || !end) return true;
+          return start.getFullYear() <= year && end.getFullYear() >= year;
+        });
 
         // 该品牌的电表
         const brandMeters = meterList.filter((m: any) => m.brand_id === brand.id);
         const meterIds = new Set(brandMeters.map((m: any) => m.id));
-
-        // 该品牌电表下的柜子
         const brandCabinets = cabinetList.filter((c: any) => meterIds.has(c.meter_id));
 
-        // 汇总数据
-        const totalMonthlyRent = brandContracts.reduce((sum: number, c: any) => sum + (Number(c.monthly_rent) || 0), 0);
-        const totalAnnualRent = brandContracts.reduce((sum: number, c: any) => sum + (Number(c.rent_amount) || 0), 0);
-        const electricityPrice = brandContracts[0]?.electricity_price ? Number(brandContracts[0].electricity_price) : null;
-        const postTaxPrice = brandContracts[0]?.post_tax_electricity_price ? Number(brandContracts[0].post_tax_electricity_price) : null;
-        const taxEnabled = brandContracts[0]?.tax_enabled || false;
-        const taxRate = brandContracts[0]?.tax_rate ? Number(brandContracts[0].tax_rate) : null;
+        // 该品牌的租金收入
+        const brandIncomes = incomeList.filter((i: any) => i.brand_id === brand.id);
 
-        return {
-          ...brand,
-          contracts: brandContracts,
-          meters: brandMeters,
-          cabinets: brandCabinets,
+        // ─── 按场地方分组 ───
+        const siteMap = new Map<number, SiteData>();
+
+        // 从电表收集场地
+        for (const m of brandMeters) {
+          const lid = m.landlord_id || 0;
+          if (!siteMap.has(lid)) {
+            siteMap.set(lid, {
+              landlordId: lid,
+              landlordName: m.landlord_name || "未关联场地",
+              stationIds: [],
+              brandContract: null,
+              venueContract: null,
+              meters: [],
+              cabinetCount: 0,
+              elecPayKwh: 0, elecPayAmount: 0,
+              elecCollectKwh: 0, elecCollectAmount: 0, elecCollectNet: 0, elecProfit: 0,
+              elecPayStatus: "", elecCollectStatus: "",
+              rentIncome: null,
+            });
+          }
+          const site = siteMap.get(lid)!;
+          site.meters.push(m);
+          if (m.station_id && !site.stationIds.includes(m.station_id)) {
+            site.stationIds.push(m.station_id);
+          }
+          // 柜子数
+          site.cabinetCount += brandCabinets.filter((c: any) => c.meter_id === m.id).length;
+        }
+
+        // 从合同补充场地（可能有合同但没电表的场地）
+        for (const c of yearBrandContracts) {
+          const lid = c.landlord_id || 0;
+          if (!siteMap.has(lid)) {
+            siteMap.set(lid, {
+              landlordId: lid,
+              landlordName: c.landlord_name || "未关联场地",
+              stationIds: [],
+              brandContract: null,
+              venueContract: null,
+              meters: [],
+              cabinetCount: 0,
+              elecPayKwh: 0, elecPayAmount: 0,
+              elecCollectKwh: 0, elecCollectAmount: 0, elecCollectNet: 0, elecProfit: 0,
+              elecPayStatus: "", elecCollectStatus: "",
+              rentIncome: null,
+            });
+          }
+        }
+
+        // 填充合同、电费、租金
+        for (const site of siteMap.values()) {
+          // 品牌方合同（按 landlord_id 匹配）
+          site.brandContract = yearBrandContracts.find((c: any) => c.landlord_id === site.landlordId) || null;
+          // 场地合同（成本侧）
+          site.venueContract = venueContracts.find((c: any) => c.landlord_id === site.landlordId) || null;
+          // 租金收入
+          site.rentIncome = brandIncomes.find((i: any) => i.station_id && site.stationIds.includes(i.station_id)) || brandIncomes.find((i: any) => !i.station_id) || null;
+
+          // 电费数据：从 electricity records 中按 station_id 匹配
+          for (const sid of site.stationIds) {
+            const elecRecord = elecList.find((e: any) => e.station_id === sid);
+            if (!elecRecord) continue;
+            // 从 meterDetails 中筛选该品牌的电表
+            const brandDetails = (elecRecord.meterDetails ?? []).filter((d: any) => d.brand_name === brand.name);
+            if (brandDetails.length > 0) {
+              for (const d of brandDetails) {
+                site.elecPayKwh += Number(d.kwh ?? 0);
+                site.elecPayAmount += Number(d.pay_amount ?? 0);
+                site.elecCollectKwh += Number(d.kwh ?? 0);
+                site.elecCollectAmount += Number(d.collect_amount ?? 0);
+                site.elecCollectNet += Number(d.collect_net ?? 0);
+              }
+              if (elecRecord.pay_status) site.elecPayStatus = elecRecord.pay_status;
+              if (elecRecord.collect_status) site.elecCollectStatus = elecRecord.collect_status;
+            }
+          }
+          site.elecProfit = Math.round((site.elecCollectNet - site.elecPayAmount) * 100) / 100;
+        }
+
+        const sites = [...siteMap.values()].sort((a, b) => a.landlordName.localeCompare(b.landlordName));
+
+        // 品牌汇总
+        const summary = {
+          siteCount: sites.length,
           meterCount: brandMeters.length,
           cabinetCount: brandCabinets.length,
-          contractCount: brandContracts.length,
-          totalMonthlyRent,
-          totalAnnualRent,
-          electricityPrice,
-          postTaxPrice,
-          taxEnabled,
-          taxRate,
+          contractCount: yearBrandContracts.length,
+          totalMonthlyRent: yearBrandContracts.reduce((s: number, c: any) => s + (Number(c.monthly_rent) || 0), 0),
+          totalElecPayKwh: sites.reduce((s, g) => s + g.elecPayKwh, 0),
+          totalElecPayAmount: sites.reduce((s, g) => s + g.elecPayAmount, 0),
+          totalElecCollectKwh: sites.reduce((s, g) => s + g.elecCollectKwh, 0),
+          totalElecCollectAmount: sites.reduce((s, g) => s + g.elecCollectAmount, 0),
+          totalElecCollectNet: sites.reduce((s, g) => s + g.elecCollectNet, 0),
+          totalElecProfit: sites.reduce((s, g) => s + g.elecProfit, 0),
+          totalRentIncome: sites.reduce((s, g) => s + (Number(g.rentIncome?.monthly_rent) || 0), 0),
         };
+
+        return { ...brand, sites, summary };
       });
-  }, [brands.data, contracts.data, meters.data, cabinets.data, keyword]);
+  }, [brands.data, contracts.data, meters.data, cabinets.data, electricity.data, rentIncomes.data, keyword, year]);
 
-  const toggleExpand = (id: number) => {
-    setExpandedId(prev => prev === id ? null : id);
-  };
+  const toggleExpand = (id: number) => setExpandedId(prev => prev === id ? null : id);
 
-  const doExport = () => {
-    if (brandData.length === 0) { toast.error("暂无数据可导出"); return; }
-    exportXlsx(`品牌方管理_${new Date().toISOString().slice(0, 10)}`, [{
-      name: "品牌方管理",
-      rows: brandData.map((b: any) => ({
-        品牌名称: b.name,
-        联系人: b.contact ?? "",
-        电表数: b.meterCount,
-        柜子数: b.cabinetCount,
-        合同数: b.contractCount,
-        电费单价: b.electricityPrice ?? "",
-        场地月租金: b.totalMonthlyRent,
-        场地年租金: b.totalAnnualRent,
-        备注: b.remark ?? "",
-      })),
-    }]);
-    toast.success("已导出 Excel");
-  };
-
-  const th = "px-3 py-2 text-left text-xs font-medium text-slate-500";
+  const th = "px-3 py-2 text-left text-xs font-medium text-slate-500 whitespace-nowrap";
+  const thR = "px-3 py-2 text-right text-xs font-medium text-slate-500 whitespace-nowrap";
+  const td = "px-3 py-2 text-xs";
+  const tdR = "px-3 py-2 text-xs text-right tabular-nums";
 
   return (
     <div className="space-y-4">
@@ -103,16 +222,19 @@ export default function Brands() {
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
           <input className={`${inputCls} w-56 pl-8`} placeholder="搜索品牌名称…" value={keyword} onChange={(e) => setKeyword(e.target.value)} />
         </div>
-        <input type="month" className={inputCls + " w-40"} value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} />
-        <div className="ml-auto flex gap-2">
-          <Button variant="outline" onClick={doExport}><Download className="mr-1.5 h-4 w-4" />导出表格</Button>
-        </div>
+        <select className={`${inputCls} w-28`} value={year} onChange={(e) => setYear(Number(e.target.value))}>
+          {yearOptions.map((y) => <option key={y} value={y}>{y}年</option>)}
+        </select>
+        <input type="month" className={inputCls + " w-40"}
+          value={selectedMonth ? `${selectedMonth.slice(0, 4)}-${selectedMonth.slice(4)}` : ""}
+          onChange={e => setSelectedMonth(e.target.value ? e.target.value.replace("-", "") : "")} />
       </div>
 
       {/* 品牌列表 */}
       <div className="space-y-4">
         {brandData.map((brand: any) => {
           const isExpanded = expandedId === brand.id;
+          const s = brand.summary;
 
           return (
             <div key={brand.id} className="rounded-xl border bg-white shadow-sm">
@@ -129,129 +251,214 @@ export default function Brands() {
                   </div>
                 </div>
                 <div className="flex items-center gap-6 text-xs">
-                  <div className="flex items-center gap-1">
-                    <Zap className="h-3.5 w-3.5 text-amber-500" />
-                    <span className="tabular-nums">{brand.meterCount}</span> 电表
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Box className="h-3.5 w-3.5 text-violet-500" />
-                    <span className="tabular-nums">{brand.cabinetCount}</span> 柜子
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <FileText className="h-3.5 w-3.5 text-emerald-500" />
-                    <span className="tabular-nums">{brand.contractCount}</span> 合同
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <DollarSign className="h-3.5 w-3.5 text-rose-500" />
-                    月租 <span className="tabular-nums font-medium">{fmtMoney(brand.totalMonthlyRent)}</span>
-                  </div>
+                  <span className="text-slate-500">{s.siteCount} 场地</span>
+                  <span className="text-slate-500">{s.meterCount} 电表</span>
+                  <span className="text-slate-500">{s.cabinetCount} 柜子</span>
+                  <span className="text-rose-600">付款 <b className="tabular-nums">{fmtMoney(s.totalElecPayAmount)}</b></span>
+                  <span className="text-emerald-600">收款 <b className="tabular-nums">{fmtMoney(s.totalElecCollectNet)}</b></span>
+                  <span className={s.totalElecProfit >= 0 ? "text-emerald-600" : "text-rose-600"}>
+                    利润 <b className="tabular-nums">{fmtMoney(s.totalElecProfit)}</b>
+                  </span>
                 </div>
               </div>
 
               {/* 展开内容 */}
               {isExpanded && (
                 <div className="border-t px-5 py-4 space-y-4">
-                  {/* 汇总数据 */}
-                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                  {/* 品牌概览卡片 */}
+                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
                     <div className="rounded-lg border bg-slate-50 px-3 py-2">
-                      <div className="text-[10px] text-slate-400">电表数量</div>
-                      <div className="text-lg font-semibold tabular-nums">{brand.meterCount}</div>
+                      <div className="text-[10px] text-slate-400">场地数量</div>
+                      <div className="text-lg font-semibold tabular-nums">{s.siteCount}</div>
                     </div>
                     <div className="rounded-lg border bg-slate-50 px-3 py-2">
-                      <div className="text-[10px] text-slate-400">柜子数量</div>
-                      <div className="text-lg font-semibold tabular-nums">{brand.cabinetCount}</div>
+                      <div className="text-[10px] text-slate-400">电表 / 柜子</div>
+                      <div className="text-lg font-semibold tabular-nums">{s.meterCount} / {s.cabinetCount}</div>
                     </div>
-                    <div className="rounded-lg border bg-slate-50 px-3 py-2">
-                      <div className="text-[10px] text-slate-400">电费单价（税前）</div>
-                      <div className="text-lg font-semibold tabular-nums">{brand.electricityPrice ? `${fmtNum(brand.electricityPrice)} 元/度` : "-"}</div>
+                    <div className="rounded-lg border bg-rose-50 px-3 py-2">
+                      <div className="text-[10px] text-rose-500">电费付款</div>
+                      <div className="text-lg font-semibold tabular-nums text-rose-600">{fmtMoney(s.totalElecPayAmount)}</div>
                     </div>
-                    {brand.taxEnabled && brand.postTaxPrice && (
-                      <div className="rounded-lg border bg-emerald-50 px-3 py-2">
-                        <div className="text-[10px] text-emerald-600">电费单价（税后）</div>
-                        <div className="text-lg font-semibold tabular-nums text-emerald-700">{fmtNum(brand.postTaxPrice)} 元/度</div>
-                      </div>
-                    )}
-                    <div className="rounded-lg border bg-slate-50 px-3 py-2">
-                      <div className="text-[10px] text-slate-400">场地月租金</div>
-                      <div className="text-lg font-semibold tabular-nums">{fmtMoney(brand.totalMonthlyRent)}</div>
+                    <div className="rounded-lg border bg-emerald-50 px-3 py-2">
+                      <div className="text-[10px] text-emerald-600">电费收款（不含税）</div>
+                      <div className="text-lg font-semibold tabular-nums text-emerald-700">{fmtMoney(s.totalElecCollectNet)}</div>
+                    </div>
+                    <div className="rounded-lg border bg-blue-50 px-3 py-2">
+                      <div className="text-[10px] text-blue-600">月租金收入</div>
+                      <div className="text-lg font-semibold tabular-nums text-blue-700">{fmtMoney(s.totalRentIncome || s.totalMonthlyRent)}</div>
+                    </div>
+                    <div className={`rounded-lg border px-3 py-2 ${s.totalElecProfit >= 0 ? "bg-emerald-50" : "bg-rose-50"}`}>
+                      <div className={`text-[10px] ${s.totalElecProfit >= 0 ? "text-emerald-600" : "text-rose-500"}`}>电费利润</div>
+                      <div className={`text-lg font-semibold tabular-nums ${s.totalElecProfit >= 0 ? "text-emerald-700" : "text-rose-600"}`}>{fmtMoney(s.totalElecProfit)}</div>
                     </div>
                   </div>
 
-                  {/* 合同列表 */}
-                  {brand.contracts.length > 0 && (
-                    <div>
-                      <h4 className="mb-2 text-xs font-semibold text-slate-600">合同（{brand.contracts.length} 份）</h4>
-                      <div className="overflow-x-auto rounded-lg border">
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="border-b bg-slate-50">
-                              <th className={th}>关联场地</th>
-                              <th className={th}>电费单价</th>
-                              <th className={th}>计费柜数</th>
-                              <th className={th}>场地月租金</th>
-                              <th className={th}>付款方式</th>
-                              <th className={th}>合同期限</th>
-                              <th className={th}>状态</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {brand.contracts.map((c: any) => (
-                              <tr key={c.id} className="border-b last:border-0">
-                                <td className="px-3 py-2 font-medium">{c.landlord_name ?? "-"}</td>
-                                <td className="px-3 py-2 tabular-nums">{c.electricity_price ? `${fmtNum(c.electricity_price)} 元/度` : "-"}</td>
-                                <td className="px-3 py-2 tabular-nums">{c.cabinets_count ?? "-"}</td>
-                                <td className="px-3 py-2 tabular-nums">{c.monthly_rent ? fmtMoney(c.monthly_rent) : "-"}</td>
-                                <td className="px-3 py-2">{c.pay_method ?? "-"}</td>
-                                <td className="px-3 py-2 whitespace-nowrap">{fmtDate(c.start_date)} ~ {fmtDate(c.end_date)}</td>
-                                <td className="px-3 py-2"><StatusBadge status={c.status} /></td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                  {/* 按场地展示 */}
+                  {brand.sites.map((site: SiteData) => (
+                    <div key={site.landlordId} className="rounded-xl border overflow-hidden">
+                      {/* 场地标题 */}
+                      <div className="flex items-center justify-between bg-slate-50 px-4 py-2.5 border-b">
+                        <div className="flex items-center gap-2">
+                          <Building2 className="h-4 w-4 text-emerald-600" />
+                          <span className="text-sm font-semibold text-slate-700">{site.landlordName}</span>
+                          <span className="text-xs text-slate-400">{site.meters.length} 电表 · {site.cabinetCount} 柜子</span>
+                        </div>
+                        <div className="flex items-center gap-4 text-xs">
+                          <span className="text-rose-600">付款 {fmtMoney(site.elecPayAmount)}</span>
+                          <span className="text-emerald-600">收款 {fmtMoney(site.elecCollectNet)}</span>
+                          <span className={site.elecProfit >= 0 ? "text-emerald-600" : "text-rose-600"}>利润 {fmtMoney(site.elecProfit)}</span>
+                        </div>
                       </div>
-                    </div>
-                  )}
 
-                  {/* 电表列表 */}
-                  {brand.meters.length > 0 && (
-                    <div>
-                      <h4 className="mb-2 text-xs font-semibold text-slate-600">电表（{brand.meters.length} 块）</h4>
-                      <div className="overflow-x-auto rounded-lg border">
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="border-b bg-slate-50">
-                              <th className={th}>电表编号</th>
-                              <th className={th}>电表名称</th>
-                              <th className={th}>场地方</th>
-                              <th className={th}>站点</th>
-                              <th className={th}>柜子数</th>
-                              <th className={th}>状态</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {brand.meters.map((m: any) => {
-                              const meterCabinets = brand.cabinets.filter((c: any) => c.meter_id === m.id);
-                              return (
-                                <tr key={m.id} className="border-b last:border-0">
-                                  <td className="px-3 py-2 font-mono font-medium">{m.meter_no}</td>
-                                  <td className="px-3 py-2">{m.meter_name ?? "-"}</td>
-                                  <td className="px-3 py-2">{m.landlord_name ?? "-"}</td>
-                                  <td className="px-3 py-2">{m.station_name ?? "-"}</td>
-                                  <td className="px-3 py-2 tabular-nums">{meterCabinets.length}</td>
-                                  <td className="px-3 py-2"><StatusBadge status={m.status} /></td>
+                      <div className="p-4 space-y-3">
+                        {/* 合同信息 */}
+                        <div className="grid grid-cols-2 gap-3">
+                          {/* 品牌方合同（收入侧） */}
+                          <div className="rounded-lg border">
+                            <div className="flex items-center gap-1.5 bg-emerald-50/50 px-3 py-1.5 border-b">
+                              <ArrowUpCircle className="h-3.5 w-3.5 text-emerald-500" />
+                              <span className="text-[11px] font-semibold text-emerald-600">品牌方合同（收入）</span>
+                            </div>
+                            {site.brandContract ? (
+                              <div className="px-3 py-2 space-y-1 text-xs">
+                                <div className="flex justify-between"><span className="text-slate-500">电费单价</span><span className="font-medium">{site.brandContract.electricity_price ? `${fmtNum(site.brandContract.electricity_price)} 元/度` : "-"}</span></div>
+                                <div className="flex justify-between"><span className="text-slate-500">计费柜数</span><span className="font-medium">{site.brandContract.cabinets_count ?? "-"}</span></div>
+                                <div className="flex justify-between"><span className="text-slate-500">月租金</span><span className="font-medium">{site.brandContract.monthly_rent ? fmtMoney(site.brandContract.monthly_rent) : "-"}</span></div>
+                                <div className="flex justify-between"><span className="text-slate-500">付款方式</span><span>{site.brandContract.pay_method ?? "-"}</span></div>
+                                <div className="flex justify-between"><span className="text-slate-500">合同期限</span><span>{fmtDate(site.brandContract.start_date)} ~ {fmtDate(site.brandContract.end_date)}</span></div>
+                                <div className="flex justify-between"><span className="text-slate-500">状态</span><StatusBadge status={site.brandContract.status} /></div>
+                              </div>
+                            ) : (
+                              <div className="px-3 py-4 text-center text-xs text-slate-400">暂无品牌方合同</div>
+                            )}
+                          </div>
+
+                          {/* 场地合同（成本侧） */}
+                          <div className="rounded-lg border">
+                            <div className="flex items-center gap-1.5 bg-rose-50/50 px-3 py-1.5 border-b">
+                              <ArrowDownCircle className="h-3.5 w-3.5 text-rose-500" />
+                              <span className="text-[11px] font-semibold text-rose-600">场地合同（成本）</span>
+                            </div>
+                            {site.venueContract ? (
+                              <div className="px-3 py-2 space-y-1 text-xs">
+                                <div className="flex justify-between"><span className="text-slate-500">电费单价</span><span className="font-medium">{site.venueContract.electricity_price ? `${fmtNum(site.venueContract.electricity_price)} 元/度` : "-"}</span></div>
+                                <div className="flex justify-between"><span className="text-slate-500">月租金</span><span className="font-medium">{site.venueContract.monthly_rent ? fmtMoney(site.venueContract.monthly_rent) : "-"}</span></div>
+                                <div className="flex justify-between"><span className="text-slate-500">付款方式</span><span>{site.venueContract.pay_method ?? "-"}</span></div>
+                                <div className="flex justify-between"><span className="text-slate-500">合同期限</span><span>{fmtDate(site.venueContract.start_date)} ~ {fmtDate(site.venueContract.end_date)}</span></div>
+                                <div className="flex justify-between"><span className="text-slate-500">状态</span><StatusBadge status={site.venueContract.status} /></div>
+                              </div>
+                            ) : (
+                              <div className="px-3 py-4 text-center text-xs text-slate-400">暂无场地合同</div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* 电费收支 */}
+                        <div className="rounded-lg border">
+                          <div className="flex items-center gap-1.5 bg-amber-50/50 px-3 py-1.5 border-b">
+                            <Zap className="h-3.5 w-3.5 text-amber-500" />
+                            <span className="text-[11px] font-semibold text-amber-600">电费收支（{selectedMonth ? `${selectedMonth.slice(0, 4)}-${selectedMonth.slice(4)}` : "当月"}）</span>
+                          </div>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="bg-slate-50">
+                                  <th className={th}>项目</th>
+                                  <th className={thR}>度数</th>
+                                  <th className={thR}>单价</th>
+                                  <th className={thR}>金额</th>
+                                  <th className={thR}>不含税收入</th>
+                                  <th className={th}>状态</th>
                                 </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                              </thead>
+                              <tbody>
+                                <tr className="border-t">
+                                  <td className={`${td} font-medium text-rose-600`}>付款（成本）</td>
+                                  <td className={tdR}>{fmtNum(site.elecPayKwh)}</td>
+                                  <td className={tdR}>{site.brandContract?.electricity_price ? fmtNum(site.venueContract?.electricity_price || 0) : "-"}</td>
+                                  <td className={tdR}><Money v={site.elecPayAmount} /></td>
+                                  <td className={tdR}>-</td>
+                                  <td className={td}>{site.elecPayStatus ? <StatusBadge status={site.elecPayStatus} /> : "-"}</td>
+                                </tr>
+                                <tr className="border-t">
+                                  <td className={`${td} font-medium text-emerald-600`}>收款（收入）</td>
+                                  <td className={tdR}>{fmtNum(site.elecCollectKwh)}</td>
+                                  <td className={tdR}>{site.brandContract?.electricity_price ? fmtNum(site.brandContract.electricity_price) : "-"}</td>
+                                  <td className={tdR}><Money v={site.elecCollectAmount} /></td>
+                                  <td className={tdR}><Money v={site.elecCollectNet} /></td>
+                                  <td className={td}>{site.elecCollectStatus ? <StatusBadge status={site.elecCollectStatus} /> : "-"}</td>
+                                </tr>
+                                <tr className="border-t bg-slate-50 font-semibold">
+                                  <td className={td}>利润</td>
+                                  <td className={tdR}>-</td>
+                                  <td className={tdR}>-</td>
+                                  <td className={tdR}>-</td>
+                                  <td className={tdR}><Money v={site.elecProfit} strong /></td>
+                                  <td className={td}>-</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        {/* 租金收入 */}
+                        {(site.rentIncome || site.brandContract?.monthly_rent) && (
+                          <div className="rounded-lg border">
+                            <div className="flex items-center gap-1.5 bg-blue-50/50 px-3 py-1.5 border-b">
+                              <Receipt className="h-3.5 w-3.5 text-blue-500" />
+                              <span className="text-[11px] font-semibold text-blue-600">租金收入</span>
+                            </div>
+                            <div className="px-3 py-2 grid grid-cols-4 gap-4 text-xs">
+                              <div><span className="text-slate-500">单柜月租</span><div className="font-medium">{(site.rentIncome?.unit_monthly_rent || site.brandContract?.unit_monthly_rent) ? fmtMoney(site.rentIncome?.unit_monthly_rent || site.brandContract?.unit_monthly_rent) : "-"}</div></div>
+                              <div><span className="text-slate-500">柜数</span><div className="font-medium">{site.rentIncome?.cabinets_count || site.brandContract?.cabinets_count || site.cabinetCount || "-"}</div></div>
+                              <div><span className="text-slate-500">月租金</span><div className="font-medium text-blue-700">{(site.rentIncome?.monthly_rent || site.brandContract?.monthly_rent) ? fmtMoney(site.rentIncome?.monthly_rent || site.brandContract?.monthly_rent) : "-"}</div></div>
+                              <div><span className="text-slate-500">年收入</span><div className="font-medium text-blue-700">{(site.rentIncome?.annual_income || site.brandContract?.rent_amount) ? fmtMoney(site.rentIncome?.annual_income || site.brandContract?.rent_amount) : "-"}</div></div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 电表明细 */}
+                        {site.meters.length > 0 && (
+                          <div className="rounded-lg border">
+                            <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 border-b">
+                              <Zap className="h-3.5 w-3.5 text-slate-400" />
+                              <span className="text-[11px] font-semibold text-slate-500">电表明细（{site.meters.length} 块）</span>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="bg-slate-50">
+                                    <th className={th}>电表编号</th>
+                                    <th className={th}>电表名称</th>
+                                    <th className={th}>站点</th>
+                                    <th className={thR}>柜子数</th>
+                                    <th className={th}>状态</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {site.meters.map((m: any) => {
+                                    const mc = cabinets.data?.filter((c: any) => c.meter_id === m.id).length ?? 0;
+                                    return (
+                                      <tr key={m.id} className="border-t">
+                                        <td className={`${td} font-mono`}>{m.meter_no}</td>
+                                        <td className={td}>{m.meter_name ?? "-"}</td>
+                                        <td className={td}>{m.station_name ?? "-"}</td>
+                                        <td className={tdR}>{mc}</td>
+                                        <td className={td}><StatusBadge status={m.status} /></td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
-                  )}
+                  ))}
 
-                  {brand.meters.length === 0 && brand.contracts.length === 0 && (
-                    <div className="py-6 text-center text-sm text-slate-400">
-                      暂无关联数据
-                    </div>
+                  {brand.sites.length === 0 && (
+                    <div className="py-6 text-center text-sm text-slate-400">暂无关联数据，请先在电表管理中关联品牌</div>
                   )}
                 </div>
               )}

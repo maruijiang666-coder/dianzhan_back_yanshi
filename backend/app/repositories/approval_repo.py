@@ -52,7 +52,11 @@ def list_requests(biz_type: str = None, status: str = None, applicant: str = Non
             conditions.append("ar.applicant = %s"); values.append(applicant)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cur.execute(f"""
-            SELECT ar.*, dr.period as dividend_period, dr.station_id, s.name as station_name
+            SELECT ar.*,
+                   COALESCE(ar.station_name, s.name) as station_name,
+                   COALESCE(ar.station_id, dr.station_id) as station_id,
+                   COALESCE(ar.period, dr.period) as period,
+                   dr.period as dividend_period
             FROM approval_requests ar
             LEFT JOIN dividend_records dr ON ar.dividend_record_id = dr.id
             LEFT JOIN stations s ON dr.station_id = s.id
@@ -111,8 +115,9 @@ def create_request(data: dict):
 
         cur.execute("""
             INSERT INTO approval_requests
-            (biz_type, title, reason, amount, applicant, attachments, flow_nodes, status, dividend_record_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, '审批中', %s)
+            (biz_type, title, reason, amount, applicant, attachments, flow_nodes, status, dividend_record_id,
+             station_id, station_name, period, electricity_amount, rent_amount)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, '审批中', %s, %s, %s, %s, %s, %s)
             RETURNING *
         """, (
             data.get("bizType"), data.get("title"), data.get("reason"),
@@ -120,6 +125,9 @@ def create_request(data: dict):
             json.dumps(data.get("attachments", []), ensure_ascii=False),
             json.dumps(flow_nodes, ensure_ascii=False),
             data.get("dividendRecordId"),
+            data.get("stationId"), data.get("stationName"),
+            data.get("period"), data.get("electricityAmount"),
+            data.get("rentAmount"),
         ))
         request = cur.fetchone()
 

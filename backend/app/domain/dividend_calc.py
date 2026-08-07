@@ -20,9 +20,21 @@ class DividendCalculator:
         # 1. 获取该场地方的合同（计算电费单价和租金）
         contracts = self._get_contracts(landlord_id, station.get("name"))
         elec_pay_price = 0    # 场地合同电费单价（成本）
-        elec_collect_price = 0  # 品牌方合同电费单价（收入）
+        elec_collect_price = 0  # 品牌方合同电费单价（收入，税前）
         rent_cost = 0          # 场地合同月租金
         rent_income = 0        # 品牌方合同月租金
+        rent_refund_total = 0  # 场地费退款总额
+
+        # 按品牌记录电费单价和税后信息
+        brand_elec_map = {}  # brand_id -> {pre_tax, post_tax, tax_enabled}
+        # 按品牌记录场地租金税后信息
+        brand_rent_map = {}  # brand_id -> {pre_tax, post_tax, tax_enabled}
+
+        # 解析当前期间的年月
+        if "-" in period:
+            period_year, period_month = map(int, period.split("-"))
+        else:
+            period_year, period_month = int(period[:4]), int(period[4:])
 
         for c in contracts:
             if c["contract_type"] == "场地合同":
@@ -31,23 +43,127 @@ class DividendCalculator:
                 if c["electricity_price"]:
                     elec_pay_price = float(c["electricity_price"])
             elif c["contract_type"] == "品牌方合同":
+                # 收入使用税前单价
                 if c["electricity_price"] and not elec_collect_price:
                     elec_collect_price = float(c["electricity_price"])
-                if c["monthly_rent"]:
+
+                # 记录每个品牌的电费单价和税后信息
+                brand_id = c.get("brand_id")
+                if brand_id:
+                    brand_elec_map[brand_id] = {
+                        "pre_tax": float(c["electricity_price"] or 0),
+                        "post_tax": float(c.get("post_tax_electricity_price") or 0),
+                        "tax_enabled": bool(c.get("tax_enabled") and c.get("post_tax_electricity_price")),
+                    }
+                    # 记录场地租金税后信息
+                    if c.get("rent_tax_enabled") and c.get("post_tax_rent_price"):
+                        brand_rent_map[brand_id] = {
+                            "pre_tax": float(c["monthly_rent"] or 0),
+                            "post_tax": float(c["post_tax_rent_price"] or 0),
+                            "tax_rate": float(c.get("rent_tax_rate") or 0.01),
+                            "tax_enabled": True,
+                            "brand_name": c.get("brand_name", ""),
+                        }
+
+                # 判断是否为合同首月（使用首月场地租金）
+                start_date = c.get("start_date")
+                is_first_month = False
+                if start_date and c.get("first_month_rent"):
+                    start_year = start_date.year if hasattr(start_date, 'year') else int(str(start_date)[:4])
+                    start_month = start_date.month if hasattr(start_date, 'month') else int(str(start_date)[5:7])
+                    is_first_month = (period_year == start_year and period_month == start_month)
+
+                if is_first_month:
+                    rent_income += float(c["first_month_rent"])
+                elif c["monthly_rent"]:
                     rent_income += float(c["monthly_rent"])
+
+                # 判断是否为合同提前结束月（场地费退款）- 优先使用 early_end_date，否则使用 end_date
+                early_end_date = c.get("early_end_date")
+                end_date = early_end_date or c.get("end_date")
+                if end_date and c.get("rent_refund"):
+                    end_year = end_date.year if hasattr(end_date, 'year') else int(str(end_date)[:4])
+                    end_month = end_date.month if hasattr(end_date, 'month') else int(str(end_date)[5:7])
+                    if period_year == end_year and period_month == end_month:
+                        rent_refund_total += float(c["rent_refund"])
 
         # 2. 获取电表读数（从meter_monthly）
         total_kwh, meter_details = self._get_meter_kwh(landlord_id, period, station_id)
 
-        # 3. 计算电费收入和成本
+        # 3. 计算电费收入（使用税前单价）和成本
         elec_income = round(total_kwh * elec_collect_price, 2) if elec_collect_price else 0
         elec_cost = round(total_kwh * elec_pay_price, 2) if elec_pay_price else 0
+
+        # 按品牌计算税收（只有启用税后计算的品牌才计算税收）
+        elec_tax = 0
+        tax_details = []  # 税收明细
+        for d in meter_details:
+            brand_id = d.get("brand_id")
+            kwh = float(d.get("kwh") or 0)
+            brand_info = brand_elec_map.get(brand_id, {})
+            if brand_info.get("tax_enabled") and kwh > 0:
+                pre_tax = brand_info["pre_tax"]
+                post_tax = brand_info["post_tax"]
+                tax_amount = round(kwh * (pre_tax - post_tax), 2)
+                elec_tax += tax_amount
+                tax_details.append({
+                    "meterNo": d["meter_no"],
+                    "brandName": d.get("brand_name", ""),
+                    "kwh": kwh,
+                    "preTaxPrice": pre_tax,
+                    "postTaxPrice": post_tax,
+                    "amount": tax_amount,
+                })
+        elec_tax = round(elec_tax, 2)
+
+        # 计算场地税（按品牌方合同计算）
+        rent_tax = 0
+        rent_tax_details = []
+        for brand_id, brand_info in brand_rent_map.items():
+            if brand_info.get("tax_enabled"):
+                pre_tax = brand_info["pre_tax"]
+                post_tax = brand_info["post_tax"]
+                tax_rate = brand_info.get("tax_rate", 0.01)
+                tax_amount = round(pre_tax - post_tax, 2)
+                rent_tax += tax_amount
+                rent_tax_details.append({
+                    "brandName": brand_info["brand_name"],
+                    "preTaxPrice": pre_tax,
+                    "postTaxPrice": post_tax,
+                    "taxRate": tax_rate,
+                    "amount": tax_amount,
+                })
+        rent_tax = round(rent_tax, 2)
 
         # 4. 运营费用
         expense = rent_repo.get_expense(station_id, period)
         op_expense = float(expense["amount"]) if expense else 0
 
         # 5. 组装收入数据
+        # 构建租金收入明细（区分首月租金）
+        rent_income_details = []
+        for c in contracts:
+            if c["contract_type"] == "品牌方合同":
+                start_date = c.get("start_date")
+                is_first_month = False
+                if start_date and c.get("first_month_rent"):
+                    start_year = start_date.year if hasattr(start_date, 'year') else int(str(start_date)[:4])
+                    start_month = start_date.month if hasattr(start_date, 'month') else int(str(start_date)[5:7])
+                    is_first_month = (period_year == start_year and period_month == start_month)
+
+                amount = float(c.get("first_month_rent") or 0) if is_first_month else float(c.get("monthly_rent") or 0)
+                brand_id = c.get("brand_id")
+                rent_tax_info = brand_rent_map.get(brand_id, {})
+                rent_income_details.append({
+                    "brandId": brand_id,
+                    "brandName": c.get("brand_name", ""),
+                    "cabinets": float(c.get("cabinets_count") or 0),
+                    "unitMonthlyRent": float(c.get("unit_monthly_rent") or 0),
+                    "amount": amount,
+                    "isFirstMonth": is_first_month,
+                    "postTaxRent": rent_tax_info.get("post_tax") if rent_tax_info.get("tax_enabled") else None,
+                })
+
         income = {
             "elecIncome": {
                 "total": elec_income,
@@ -55,18 +171,14 @@ class DividendCalculator:
                     "meterNo": d["meter_no"],
                     "brandName": d["brand_name"],
                     "kwh": float(d["kwh"] or 0),
-                    "unitPrice": elec_collect_price,
-                    "amount": round(float(d["kwh"] or 0) * elec_collect_price, 2),
+                    "unitPrice": brand_elec_map.get(d.get("brand_id"), {}).get("pre_tax", elec_collect_price),
+                    "postTaxPrice": brand_elec_map.get(d.get("brand_id"), {}).get("post_tax") if brand_elec_map.get(d.get("brand_id"), {}).get("tax_enabled") else None,
+                    "amount": round(float(d["kwh"] or 0) * brand_elec_map.get(d.get("brand_id"), {}).get("pre_tax", elec_collect_price), 2),
                 } for d in meter_details],
             },
             "rentIncome": {
                 "total": round(rent_income, 2),
-                "details": [{
-                    "brandName": c.get("brand_name", ""),
-                    "cabinets": float(c.get("cabinets_count") or 0),
-                    "unitMonthlyRent": float(c.get("unit_monthly_rent") or 0),
-                    "amount": float(c.get("monthly_rent") or 0),
-                } for c in contracts if c["contract_type"] == "品牌方合同"],
+                "details": rent_income_details,
             },
             "totalIncome": round(elec_income + rent_income, 2),
         }
@@ -76,8 +188,11 @@ class DividendCalculator:
             "elecCost": elec_cost,
             "rentCost": round(rent_cost, 2),
             "opExpense": round(op_expense, 2),
+            "elecTax": round(elec_tax, 2),
+            "rentTax": round(rent_tax, 2),
+            "rentRefund": round(rent_refund_total, 2),
             "bizDividendCost": 0,
-            "totalCost": round(elec_cost + rent_cost + op_expense, 2),
+            "totalCost": round(elec_cost + rent_cost + op_expense + elec_tax + rent_tax + rent_refund_total, 2),
             "details": {
                 "electricity": [{
                     "meterNo": d["meter_no"],
@@ -93,11 +208,71 @@ class DividendCalculator:
                     "amount": round(op_expense, 2),
                     "remark": expense.get("remark") if expense else None,
                 },
+                "elecTax": {
+                    "amount": round(elec_tax, 2),
+                    "details": tax_details,
+                },
+                "rentTax": {
+                    "amount": round(rent_tax, 2),
+                    "details": rent_tax_details,
+                },
+                "rentRefund": {
+                    "amount": round(rent_refund_total, 2),
+                    "remark": "场地费退款" if rent_refund_total > 0 else None,
+                },
             },
         }
 
+        # 6.5 按品牌 P&L（用于按品牌分红：股东/介绍人只参与某个品牌的分红）
+        brand_map = {}  # brand_id -> {income, cost, profit, venueCost, elecIncome, rentIncome, elecCost, opExpense, brandName}
+        brand_contracts = [c for c in contracts if c["contract_type"] == "品牌方合同" and c.get("brand_id")]
+        total_brand_cabinets = sum(float(c.get("cabinets_count") or 0) for c in brand_contracts) or 1
+
+        # 按品牌汇总电表度数
+        brand_kwh = {}
+        for d in meter_details:
+            bid = d.get("brand_id")
+            if bid:
+                brand_kwh[bid] = brand_kwh.get(bid, 0) + float(d.get("kwh") or 0)
+
+        for c in brand_contracts:
+            bid = c["brand_id"]
+            cabs = float(c.get("cabinets_count") or 0)
+            kwh = brand_kwh.get(bid, 0)
+            unit_price = float(c.get("electricity_price") or 0)
+            b_elec_income = round(kwh * unit_price, 2) if unit_price else 0
+
+            # 租金收入（首月租逻辑与总收入一致）
+            start_date = c.get("start_date")
+            b_is_first = False
+            if start_date and c.get("first_month_rent"):
+                sy = start_date.year if hasattr(start_date, 'year') else int(str(start_date)[:4])
+                sm = start_date.month if hasattr(start_date, 'month') else int(str(start_date)[5:7])
+                b_is_first = (period_year == sy and period_month == sm)
+            b_rent_income = float(c.get("first_month_rent") or 0) if b_is_first else float(c.get("monthly_rent") or 0)
+
+            # 场地级成本按柜数分摊
+            b_venue_cost = round(rent_cost * cabs / total_brand_cabinets, 2)
+            b_elec_cost = round(kwh * elec_pay_price, 2) if elec_pay_price else 0
+            b_op = round(op_expense * cabs / total_brand_cabinets, 2)
+
+            b_income = round(b_elec_income + b_rent_income, 2)
+            b_cost = round(b_venue_cost + b_elec_cost + b_op, 2)
+            brand_map[bid] = {
+                "brandId": bid,
+                "brandName": c.get("brand_name", ""),
+                "elecIncome": b_elec_income,
+                "rentIncome": b_rent_income,
+                "income": b_income,
+                "venueCost": b_venue_cost,
+                "elecCost": b_elec_cost,
+                "opExpense": b_op,
+                "cost": b_cost,
+                "profit": round(b_income - b_cost, 2),
+            }
+
         # 7. 计算商务分红
-        biz_dividends = self._calc_business_dividends(station_id, income, cost, period)
+        biz_dividends = self._calc_business_dividends(station_id, income, cost, period, brand_map)
 
         # 8. 如果商务分红计入成本，更新总成本
         biz_cost = sum(d["amount"] for d in biz_dividends if d.get("countAsCost"))
@@ -110,7 +285,7 @@ class DividendCalculator:
         profit = round(income["totalIncome"] - cost["totalCost"], 2)
 
         # 10. 计算股东分红
-        shareholder_dividends = self._calc_shareholder_dividends(station_id, income, profit, period)
+        shareholder_dividends = self._calc_shareholder_dividends(station_id, income, profit, period, brand_map)
 
         # 11. 计算结算日期
         settlement_date = self._calc_settlement_date(period)
@@ -123,6 +298,7 @@ class DividendCalculator:
             "income": income,
             "cost": cost,
             "profit": profit,
+            "brandBreakdown": list(brand_map.values()),
             "bizDividends": biz_dividends,
             "shareholderDividends": shareholder_dividends,
             "settlementDate": settlement_date,
@@ -166,7 +342,7 @@ class DividendCalculator:
             # 优先按 landlord_id 查，没有则按 station_id 查
             if landlord_id:
                 cur.execute("""
-                    SELECT m.meter_no, m.meter_name, b.name as brand_name
+                    SELECT m.meter_no, m.meter_name, m.brand_id, b.name as brand_name
                     FROM meters m
                     LEFT JOIN brands b ON m.brand_id = b.id
                     WHERE m.landlord_id = %s
@@ -174,7 +350,7 @@ class DividendCalculator:
                 """, (landlord_id,))
             elif station_id:
                 cur.execute("""
-                    SELECT m.meter_no, m.meter_name, b.name as brand_name
+                    SELECT m.meter_no, m.meter_name, m.brand_id, b.name as brand_name
                     FROM meters m
                     LEFT JOIN brands b ON m.brand_id = b.id
                     WHERE m.station_id = %s
@@ -205,6 +381,7 @@ class DividendCalculator:
                     details.append({
                         "meter_no": m["meter_no"],
                         "meter_name": m.get("meter_name"),
+                        "brand_id": m.get("brand_id"),
                         "brand_name": m.get("brand_name"),
                         "kwh": kwh,
                     })
@@ -243,8 +420,8 @@ class DividendCalculator:
             result.append(cfg)
         return result
 
-    def _calc_business_dividends(self, station_id: int, income: dict, cost: dict, period: str = None) -> list:
-        """计算商务分红"""
+    def _calc_business_dividends(self, station_id: int, income: dict, cost: dict, period: str = None, brand_map: dict = None) -> list:
+        """计算商务分红（支持按品牌：配置带 brand_id 时用该品牌的收入/利润作基数）"""
         configs = dividend_repo.list_introducer_configs(station_id=station_id)
         if period:
             configs = self._filter_configs_by_period(configs, period)
@@ -254,18 +431,33 @@ class DividendCalculator:
 
         results = []
         for cfg in configs:
+            brand_id = cfg.get("brand_id")
+            brand = brand_map.get(brand_id) if brand_id and brand_map else None
+
             mode = cfg.get("mode")
             ratio = float(cfg.get("ratio") or 0)
             fixed_amount = float(cfg.get("fixed_amount") or 0)
+            settlement_period = cfg.get("settlement_period", "月")
+
+            # 分红基数：指定品牌用该品牌口径，否则用整站口径
+            if brand:
+                base_income = brand["income"]
+                base_profit_brand = brand["profit"]
+            else:
+                base_income = total_income
+                base_profit_brand = base_profit
+
+            # 根据分红周期调整金额
+            period_multiplier = self._get_period_multiplier(settlement_period, period)
 
             if mode == "收入分红":
-                amount = round(total_income * ratio, 2)
-                base_amount = total_income
+                amount = round(base_income * ratio * period_multiplier, 2)
+                base_amount = base_income
             elif mode == "利润分红":
-                amount = round(base_profit * ratio, 2)
-                base_amount = base_profit
+                amount = round(base_profit_brand * ratio * period_multiplier, 2)
+                base_amount = base_profit_brand
             elif mode == "固定金额":
-                amount = fixed_amount
+                amount = round(fixed_amount * period_multiplier, 2)
                 base_amount = None
             else:
                 amount = 0
@@ -274,18 +466,21 @@ class DividendCalculator:
             results.append({
                 "introducerId": cfg.get("introducer_id"),
                 "introducerName": cfg.get("introducer_name"),
+                "brandId": brand_id,
+                "brandName": brand["brandName"] if brand else None,
                 "mode": mode,
                 "ratio": ratio,
                 "fixedAmount": fixed_amount if mode == "固定金额" else None,
                 "countAsCost": cfg.get("count_as_cost", False),
                 "baseAmount": base_amount,
                 "amount": amount,
+                "settlementPeriod": settlement_period,
             })
 
         return results
 
-    def _calc_shareholder_dividends(self, station_id: int, income: dict, profit: float, period: str = None) -> list:
-        """计算股东分红"""
+    def _calc_shareholder_dividends(self, station_id: int, income: dict, profit: float, period: str = None, brand_map: dict = None) -> list:
+        """计算股东分红（支持按品牌：配置带 brand_id 时用该品牌的收入/利润作基数）"""
         configs = dividend_repo.list_shareholder_configs(station_id=station_id)
         if period:
             configs = self._filter_configs_by_period(configs, period)
@@ -293,18 +488,33 @@ class DividendCalculator:
 
         results = []
         for cfg in configs:
+            brand_id = cfg.get("brand_id")
+            brand = brand_map.get(brand_id) if brand_id and brand_map else None
+
             mode = cfg.get("mode")
             ratio = float(cfg.get("ratio") or 0)
             fixed_amount = float(cfg.get("fixed_amount") or 0)
+            settlement_period = cfg.get("settlement_period", "月")
+
+            # 分红基数：指定品牌用该品牌口径，否则用整站口径
+            if brand:
+                base_income = brand["income"]
+                profit_base = brand["profit"]
+            else:
+                base_income = total_income
+                profit_base = profit
+
+            # 根据分红周期调整金额
+            period_multiplier = self._get_period_multiplier(settlement_period, period)
 
             if mode == "收入分红":
-                amount = round(total_income * ratio, 2)
-                base_amount = total_income
+                amount = round(base_income * ratio * period_multiplier, 2)
+                base_amount = base_income
             elif mode == "利润分红":
-                amount = round(profit * ratio, 2)
-                base_amount = profit
+                amount = round(profit_base * ratio * period_multiplier, 2)
+                base_amount = profit_base
             elif mode == "固定金额":
-                amount = fixed_amount
+                amount = round(fixed_amount * period_multiplier, 2)
                 base_amount = None
             else:
                 amount = 0
@@ -313,14 +523,59 @@ class DividendCalculator:
             results.append({
                 "shareholderId": cfg.get("shareholder_id"),
                 "shareholderName": cfg.get("shareholder_name"),
+                "brandId": brand_id,
+                "brandName": brand["brandName"] if brand else None,
                 "mode": mode,
                 "ratio": ratio,
                 "fixedAmount": fixed_amount if mode == "固定金额" else None,
                 "baseAmount": base_amount,
                 "amount": amount,
+                "settlementPeriod": settlement_period,
             })
 
         return results
+
+    def _get_period_multiplier(self, settlement_period: str, current_period: str) -> int:
+        """根据分红周期计算倍数
+        月分红：1
+        季度分红：3（每3个月分红一次）
+        半年分红：6（每6个月分红一次）
+        年分红：12（每12个月分红一次）
+        """
+        if settlement_period == "月":
+            return 1
+        elif settlement_period == "季度":
+            # 判断当前月份是否是季度末（3, 6, 9, 12月）
+            if "-" in current_period:
+                _, month = map(int, current_period.split("-"))
+            else:
+                month = int(current_period[4:])
+            if month in [3, 6, 9, 12]:
+                return 3
+            else:
+                return 0  # 非季度末不分红
+        elif settlement_period == "半年":
+            # 判断当前月份是否是半年末（6, 12月）
+            if "-" in current_period:
+                _, month = map(int, current_period.split("-"))
+            else:
+                month = int(current_period[4:])
+            if month in [6, 12]:
+                return 6
+            else:
+                return 0  # 非半年末不分红
+        elif settlement_period == "年":
+            # 判断当前月份是否是年末（12月）
+            if "-" in current_period:
+                _, month = map(int, current_period.split("-"))
+            else:
+                month = int(current_period[4:])
+            if month == 12:
+                return 12
+            else:
+                return 0  # 非年末不分红
+        else:
+            return 1
 
     def _calc_settlement_date(self, period: str) -> str:
         """计算结算日期（月末）"""

@@ -71,13 +71,14 @@ def create_station(data: dict):
     cur = get_dict_cursor(conn)
     try:
         cur.execute("""
-            INSERT INTO stations (name, code, region, address, landlord_id, company_share, status, remark)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO stations (name, code, region, address, landlord_id, company_share, status, latitude, longitude, remark)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
         """, (
             data.get("name"), data.get("code"), data.get("region"),
             data.get("address"), data.get("landlordId"),
             data.get("companyShare"), data.get("status", "运营中"),
+            data.get("latitude"), data.get("longitude"),
             data.get("remark")
         ))
         conn.commit()
@@ -94,7 +95,9 @@ def update_station(station_id: int, data: dict):
         field_map = {
             "name": "name", "code": "code", "region": "region",
             "address": "address", "landlordId": "landlord_id",
-            "companyShare": "company_share", "status": "status", "remark": "remark"
+            "companyShare": "company_share", "status": "status",
+            "latitude": "latitude", "longitude": "longitude",
+            "remark": "remark"
         }
         updates, values = [], []
         for key, db_field in field_map.items():
@@ -131,6 +134,30 @@ def delete_station(station_id: int):
         cur.execute("DELETE FROM stations WHERE id = %s", (station_id,))
         conn.commit()
         return True
+    finally:
+        cur.close()
+        conn.close()
+
+
+def get_station_locations(status: str = None):
+    """获取所有站点的位置信息（用于小程序地图标注）"""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    try:
+        conditions = ["latitude IS NOT NULL", "longitude IS NOT NULL"]
+        values = []
+        if status:
+            conditions.append("status = %s")
+            values.append(status)
+        where = f"WHERE {' AND '.join(conditions)}"
+
+        cur.execute(f"""
+            SELECT id, name, code, region, address, status, latitude, longitude
+            FROM stations
+            {where}
+            ORDER BY id
+        """, values)
+        return cur.fetchall()
     finally:
         cur.close()
         conn.close()

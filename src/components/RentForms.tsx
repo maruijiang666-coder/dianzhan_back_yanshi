@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createLease, updateLease, createIncome, updateIncome, createReceipt, updateReceipt } from "@/api/rent";
-import { listBrands } from "@/api/directory";
+import { createContract, updateContract } from "@/api/contracts";
+import { listBrands, listLandlords } from "@/api/directory";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Field, NumInput, TextInput, DateInput, SelectInput } from "./fields";
@@ -177,6 +178,162 @@ export function ReceiptForm(props: { open: boolean; onClose: () => void; rentInc
           <Field label="结束日期"><DateInput value={f.periodEnd} onChange={set("periodEnd")} /></Field>
           <Field label="到账状态"><SelectInput value={f.status} onChange={set("status")} options={[{ value: "未到账", label: "未到账" }, { value: "已到账", label: "已到账" }]} /></Field>
           <Field label="备注"><TextInput value={f.remark} onChange={set("remark")} /></Field>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="outline" onClick={props.onClose}>取消</Button>
+          <Button onClick={submit} disabled={save.isPending} className="bg-emerald-600 hover:bg-emerald-700">保存</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+
+// ─── 合同表单（场地合同/品牌方合同） ───
+export function ContractForm(props: { open: boolean; onClose: () => void; record?: any | null }) {
+  const isEdit = !!props.record;
+  const contractType = props.record?.contract_type || "场地合同";
+
+  const siteBlank = {
+    landlordId: "", stationName: "", address: "", partner: "",
+    startDate: "", endDate: "", monthlyRent: "", payMethod: "年付",
+    deposit: "", payStatus: "未付款", remark: "",
+  };
+  const brandBlank = {
+    landlordId: "", brandId: "", stationName: "", address: "",
+    startDate: "", endDate: "", cabinetsCount: "", unitMonthlyRent: "",
+    taxRate: "0.03", rentTaxEnabled: false, rentTaxRate: "0.01", remark: "",
+  };
+
+  const [f, setF] = useState(contractType === "场地合同" ? siteBlank : brandBlank);
+  const queryClient = useQueryClient();
+  const brands = useQuery({ queryKey: ["brands"], queryFn: listBrands, enabled: props.open });
+  const landlords = useQuery({ queryKey: ["landlords"], queryFn: listLandlords, enabled: props.open });
+
+  useEffect(() => {
+    if (!props.open) return;
+    if (props.record) {
+      const r = props.record;
+      if (r.contract_type === "场地合同") {
+        setF({
+          landlordId: r.landlord_id ? String(r.landlord_id) : "",
+          stationName: r.station_name || "", address: r.address || "",
+          partner: r.partner || "", startDate: r.start_date || "", endDate: r.end_date || "",
+          monthlyRent: r.monthly_rent || "", payMethod: r.pay_method || "年付",
+          deposit: r.deposit || "", payStatus: r.pay_status || "未付款", remark: r.remark || "",
+        });
+      } else {
+        setF({
+          landlordId: r.landlord_id ? String(r.landlord_id) : "",
+          brandId: r.brand_id ? String(r.brand_id) : "",
+          stationName: r.station_name || "", address: r.address || "",
+          startDate: r.start_date || "", endDate: r.end_date || "",
+          cabinetsCount: r.cabinets_count || "", unitMonthlyRent: r.unit_monthly_rent || "",
+          taxRate: r.tax_rate || "0.03",
+          rentTaxEnabled: r.rent_tax_enabled || false, rentTaxRate: r.rent_tax_rate || "0.01",
+          remark: r.remark || "",
+        });
+      }
+    } else {
+      setF(contractType === "场地合同" ? siteBlank : brandBlank);
+    }
+  }, [props.open, props.record]);
+
+  const set = (k: string) => (v: any) => setF((p: any) => ({ ...p, [k]: v }));
+
+  const save = useMutation({
+    mutationFn: (data: any) => isEdit ? updateContract(props.record.id, data) : createContract(data),
+    onSuccess: () => { toast.success("合同已保存"); queryClient.invalidateQueries(); props.onClose(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const submit = () => {
+    const base: any = {
+      contractType,
+      landlordId: numOrNull(f.landlordId),
+      stationName: strOrNull(f.stationName),
+      address: strOrNull(f.address),
+      startDate: strOrNull(f.startDate),
+      endDate: strOrNull(f.endDate),
+      remark: strOrNull(f.remark),
+    };
+
+    if (contractType === "场地合同") {
+      base.partner = strOrNull(f.partner);
+      const monthlyRent = numOrNull(f.monthlyRent);
+      base.monthlyRent = monthlyRent;
+      // 自动计算年租金
+      base.rentAmount = monthlyRent ? monthlyRent * 12 : null;
+      base.payMethod = strOrNull(f.payMethod);
+      base.deposit = numOrNull(f.deposit);
+      base.payStatus = f.payStatus;
+    } else {
+      base.brandId = numOrNull(f.brandId);
+      const cabinetsCount = numOrNull(f.cabinetsCount);
+      const unitMonthlyRent = numOrNull(f.unitMonthlyRent);
+      base.cabinetsCount = cabinetsCount;
+      base.unitMonthlyRent = unitMonthlyRent;
+      // 自动计算月租金和年租金
+      if (unitMonthlyRent && cabinetsCount) {
+        base.monthlyRent = unitMonthlyRent * cabinetsCount;
+        base.rentAmount = base.monthlyRent * 12;
+      }
+      base.taxRate = numOrNull(f.taxRate);
+      base.rentTaxEnabled = f.rentTaxEnabled;
+      base.rentTaxRate = numOrNull(f.rentTaxRate);
+    }
+
+    save.mutate(base);
+  };
+
+  return (
+    <Dialog open={props.open} onOpenChange={(o) => !o && props.onClose()}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{isEdit ? "编辑" : "新增"}{contractType}</DialogTitle>
+        </DialogHeader>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="场地方 *">
+            <SelectInput value={f.landlordId} onChange={set("landlordId")}
+              options={[{ value: "", label: "请选择场地方" }, ...(landlords.data ?? []).map((l: any) => ({ value: String(l.id), label: l.name }))]} />
+          </Field>
+          <Field label="站点名称"><TextInput value={f.stationName} onChange={set("stationName")} /></Field>
+          <Field label="地址"><TextInput value={f.address} onChange={set("address")} /></Field>
+
+          {contractType === "场地合同" ? (
+            <>
+              <Field label="合作方"><TextInput value={f.partner} onChange={set("partner")} /></Field>
+              <Field label="合同开始"><DateInput value={f.startDate} onChange={set("startDate")} /></Field>
+              <Field label="合同结束"><DateInput value={f.endDate} onChange={set("endDate")} /></Field>
+              <Field label="月租金（元）"><NumInput value={f.monthlyRent} onChange={set("monthlyRent")} /></Field>
+              <Field label="付款方式">
+                <SelectInput value={f.payMethod} onChange={set("payMethod")}
+                  options={["年付", "半年付", "季付", "月付"].map(v => ({ value: v, label: v }))} />
+              </Field>
+              <Field label="押金（元）"><NumInput value={f.deposit} onChange={set("deposit")} /></Field>
+              <Field label="付款状态">
+                <SelectInput value={f.payStatus} onChange={set("payStatus")}
+                  options={[{ value: "未付款", label: "未付款" }, { value: "已付款", label: "已付款" }]} />
+              </Field>
+            </>
+          ) : (
+            <>
+              <Field label="品牌方 *">
+                <SelectInput value={f.brandId} onChange={set("brandId")}
+                  options={[{ value: "", label: "请选择品牌方" }, ...(brands.data ?? []).map((b: any) => ({ value: String(b.id), label: b.name }))]} />
+              </Field>
+              <Field label="合同开始"><DateInput value={f.startDate} onChange={set("startDate")} /></Field>
+              <Field label="合同结束"><DateInput value={f.endDate} onChange={set("endDate")} /></Field>
+              <Field label="充电柜数"><NumInput value={f.cabinetsCount} onChange={set("cabinetsCount")} /></Field>
+              <Field label="单柜月租金(含税)"><NumInput value={f.unitMonthlyRent} onChange={set("unitMonthlyRent")} /></Field>
+              <Field label="税率">
+                <SelectInput value={f.taxRate} onChange={set("taxRate")}
+                  options={[{ value: "0.01", label: "1%" }, { value: "0.03", label: "3%" }, { value: "0.05", label: "5%" }]} />
+              </Field>
+            </>
+          )}
+
+          <Field label="备注" span><TextInput value={f.remark} onChange={set("remark")} /></Field>
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="outline" onClick={props.onClose}>取消</Button>

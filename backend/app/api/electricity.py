@@ -126,6 +126,7 @@ async def delete_electricity(record_id: int):
 async def generate_electricity(data: dict):
     """从 meter_monthly + contracts 自动生成电费台账"""
     period = data.get("period")
+    station_id = data.get("stationId")  # 可选：只生成指定站点
     if not period:
         raise HTTPException(400, "period 必填")
 
@@ -134,58 +135,89 @@ async def generate_electricity(data: dict):
     conn = get_connection()
     cur = get_dict_cursor(conn)
     try:
-        # 1. 获取所有电表及其站点、品牌信息
-        cur.execute("""
-            SELECT m.id, m.meter_no, m.station_id, m.brand_id, m.transformer_ratio,
-                   s.name as station_name, b.name as brand_name
-            FROM meters m
-            LEFT JOIN stations s ON m.station_id = s.id
-            LEFT JOIN brands b ON m.brand_id = b.id
-            WHERE m.station_id IS NOT NULL
-        """)
+        # 1. 获取电表及其站点、品牌信息
+        if station_id:
+            cur.execute("""
+                SELECT m.id, m.meter_no, m.station_id, m.brand_id, m.transformer_ratio,
+                       s.name as station_name, b.name as brand_name
+                FROM meters m
+                LEFT JOIN stations s ON m.station_id = s.id
+                LEFT JOIN brands b ON m.brand_id = b.id
+                WHERE m.station_id = %s
+            """, (station_id,))
+        else:
+            cur.execute("""
+                SELECT m.id, m.meter_no, m.station_id, m.brand_id, m.transformer_ratio,
+                       s.name as station_name, b.name as brand_name
+                FROM meters m
+                LEFT JOIN stations s ON m.station_id = s.id
+                LEFT JOIN brands b ON m.brand_id = b.id
+                WHERE m.station_id IS NOT NULL
+            """)
         meters = cur.fetchall()
 
-        # 2. 获取该月所有电表读数
-        cur.execute("SELECT address, kwh FROM meter_monthly WHERE month_period = %s", (period,))
+        # 2. 获取该月电表读数（只查相关电表）
+        meter_nos = [m["meter_no"] for m in meters if m.get("meter_no")]
+        if meter_nos:
+            placeholders = ",".join(["%s"] * len(meter_nos))
+            cur.execute(f"SELECT address, kwh FROM meter_monthly WHERE month_period = %s AND address IN ({placeholders})", (period, *meter_nos))
+        else:
+            cur.execute("SELECT address, kwh FROM meter_monthly WHERE month_period = %s AND 1=0", (period,))
         readings = {r["address"]: float(r["kwh"]) for r in cur.fetchall()}
 
-        import logging
-        logging.warning(f"[generate_electricity] period={period}, meters={len(meters)}, readings={len(readings)}")
-        for m in meters:
-            logging.warning(f"  meter: id={m['id']}, no={m['meter_no']}, station={m['station_id']}, has_reading={m['meter_no'] in readings}")
+        # 3. 获取相关合同（只查相关 landlord）
+        from collections import defaultdict
 
-        # 3. 获取所有合同（按 landlord_id 分组）
-        cur.execute("""
-            SELECT c.*, l.name as landlord_name
-            FROM contracts c
-            LEFT JOIN landlords l ON c.landlord_id = l.id
-        """)
+        # 获取站点 → landlord 映射
+        if station_id:
+            cur.execute("SELECT id, name, landlord_id FROM stations WHERE id = %s", (station_id,))
+        else:
+            cur.execute("SELECT id, name, landlord_id FROM stations")
+        station_info = {r["id"]: r for r in cur.fetchall()}
+
+        landlord_ids = list(set(r["landlord_id"] for r in station_info.values() if r.get("landlord_id")))
+        if landlord_ids:
+            placeholders = ",".join(["%s"] * len(landlord_ids))
+            cur.execute(f"""
+                SELECT c.*, l.name as landlord_name
+                FROM contracts c
+                LEFT JOIN landlords l ON c.landlord_id = l.id
+                WHERE c.landlord_id IN ({placeholders})
+            """, landlord_ids)
+        else:
+            cur.execute("""
+                SELECT c.*, l.name as landlord_name
+                FROM contracts c
+                LEFT JOIN landlords l ON c.landlord_id = l.id
+                WHERE 1=0
+            """)
         all_contracts = cur.fetchall()
 
-        from collections import defaultdict
         landlord_contracts_map = defaultdict(list)
         for c in all_contracts:
             if c.get("landlord_id"):
                 landlord_contracts_map[c["landlord_id"]].append(c)
-
-        # 获取站点 → landlord 映射
-        cur.execute("SELECT id, name, landlord_id FROM stations")
-        station_info = {r["id"]: r for r in cur.fetchall()}
 
         # 4. 按站点分组电表
         station_meters = defaultdict(list)
         for m in meters:
             station_meters[m["station_id"]].append(m)
 
+        # 预加载已有电费记录（用同一个连接）
+        if station_id:
+            cur.execute("SELECT * FROM electricity_records WHERE period = %s AND station_id = %s", (period, station_id))
+        else:
+            cur.execute("SELECT * FROM electricity_records WHERE period = %s", (period,))
+        existing_map = {r["station_id"]: r for r in cur.fetchall()}
+
         created = []
         updated = []
 
-        for station_id, station_meter_list in station_meters.items():
-            # 检查是否已存在
-            existing = electricity_repo.get_record_by_station_period(station_id, period)
+        for sid, station_meter_list in station_meters.items():
+            existing = existing_map.get(sid)
 
             # 通过 station → landlord_id → contracts 匹配
-            st_info = station_info.get(station_id, {})
+            st_info = station_info.get(sid, {})
             lid = st_info.get("landlord_id")
             contracts = landlord_contracts_map.get(lid, []) if lid else []
             # 区分场地合同（成本）和品牌方合同（收入）
@@ -207,7 +239,6 @@ async def generate_electricity(data: dict):
                 ratio = float(m.get("transformer_ratio") or 1)
                 actual_kwh = round(kwh * ratio, 2)
 
-                # 场地方付款度数和合作方收款度数
                 total_pay_kwh += actual_kwh
                 total_collect_kwh += actual_kwh
 
@@ -238,36 +269,61 @@ async def generate_electricity(data: dict):
 
             profit = round(total_collect_net - total_pay_amount, 2)
 
-            payload = {
-                "stationId": station_id,
-                "period": period,
-                "payKwh": round(total_pay_kwh, 2),
-                "payUnitPrice": float(landlord_price or 0),
-                "payAmount": total_pay_amount,
-                "payStatus": existing["pay_status"] if existing else "未付款",
-                "collectKwh": round(total_collect_kwh, 2),
-                "collectUnitPrice": float(brand_price or 0),
-                "collectAmount": total_collect_amount,
-                "taxRate": tax_rate,
-                "collectNet": total_collect_net,
-                "collectStatus": existing["collect_status"] if existing else "未到账",
-                "profit": profit,
-            }
-
             if existing:
-                # 更新已有记录，保留付款/到账状态
-                electricity_repo.update_record(existing["id"], payload)
-                electricity_repo.delete_meter_details(existing["id"])
+                # 更新已有记录（用同一个连接）
+                cur.execute("""
+                    UPDATE electricity_records SET
+                        pay_kwh=%s, pay_unit_price=%s, pay_amount=%s,
+                        collect_kwh=%s, collect_unit_price=%s, collect_amount=%s,
+                        tax_rate=%s, collect_net=%s, profit=%s, updated_at=NOW()
+                    WHERE id=%s
+                """, (
+                    round(total_pay_kwh, 2), float(landlord_price or 0), total_pay_amount,
+                    round(total_collect_kwh, 2), float(brand_price or 0), total_collect_amount,
+                    tax_rate, total_collect_net, profit, existing["id"]
+                ))
+                # 删除旧明细，插入新明细
+                cur.execute("DELETE FROM electricity_meter_details WHERE electricity_id = %s", (existing["id"],))
                 for d in meter_details:
-                    electricity_repo.create_meter_detail(existing["id"], d["meterId"], d)
-                updated.append(station_id)
+                    cur.execute("""
+                        INSERT INTO electricity_meter_details
+                        (electricity_id, meter_id, start_reading, end_reading, kwh,
+                         pay_unit_price, pay_amount, collect_unit_price, collect_amount, collect_net)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        existing["id"], d["meterId"], None, None, d["kwh"],
+                        d["payUnitPrice"], d["payAmount"],
+                        d["collectUnitPrice"], d["collectAmount"], d["collectNet"]
+                    ))
+                updated.append(sid)
             else:
-                record = electricity_repo.create_record(payload)
+                # 新增记录（用同一个连接）
+                cur.execute("""
+                    INSERT INTO electricity_records
+                    (station_id, period, pay_kwh, pay_unit_price, pay_amount, pay_status,
+                     collect_kwh, collect_unit_price, collect_amount, tax_rate, collect_net, collect_status, profit)
+                    VALUES (%s, %s, %s, %s, %s, '未付款', %s, %s, %s, %s, %s, '未到账', %s)
+                    RETURNING id
+                """, (
+                    sid, period, round(total_pay_kwh, 2), float(landlord_price or 0), total_pay_amount,
+                    round(total_collect_kwh, 2), float(brand_price or 0), total_collect_amount,
+                    tax_rate, total_collect_net, profit
+                ))
+                record_id = cur.fetchone()["id"]
                 for d in meter_details:
-                    electricity_repo.create_meter_detail(record["id"], d["meterId"], d)
-                created.append(record["id"])
+                    cur.execute("""
+                        INSERT INTO electricity_meter_details
+                        (electricity_id, meter_id, start_reading, end_reading, kwh,
+                         pay_unit_price, pay_amount, collect_unit_price, collect_amount, collect_net)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        record_id, d["meterId"], None, None, d["kwh"],
+                        d["payUnitPrice"], d["payAmount"],
+                        d["collectUnitPrice"], d["collectAmount"], d["collectNet"]
+                    ))
+                created.append(record_id)
 
-        logging.warning(f"[generate_electricity] result: created={created}, updated={updated}")
+        conn.commit()
 
         return {
             "created": len(created),

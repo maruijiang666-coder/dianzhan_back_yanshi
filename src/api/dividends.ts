@@ -1,7 +1,7 @@
 import client from "./client";
 
 // 分红配置
-export const listShareholderConfigs = (params?: { stationId?: number }) =>
+export const listShareholderConfigs = (params?: { stationId?: number; brandId?: number }) =>
   client.get("/dividends/configs/shareholder", { params }).then(r => r.data);
 
 export const saveShareholderConfig = (data: any) =>
@@ -10,7 +10,7 @@ export const saveShareholderConfig = (data: any) =>
 export const deleteShareholderConfig = (id: number) =>
   client.delete(`/dividends/configs/shareholder/${id}`).then(r => r.data);
 
-export const listIntroducerConfigs = (params?: { stationId?: number }) =>
+export const listIntroducerConfigs = (params?: { stationId?: number; brandId?: number }) =>
   client.get("/dividends/configs/introducer", { params }).then(r => r.data);
 
 export const saveIntroducerConfig = (data: any) =>

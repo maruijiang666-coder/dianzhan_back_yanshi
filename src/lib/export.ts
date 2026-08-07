@@ -23,3 +23,37 @@ export function exportXlsx(filename: string, sheets: ExportSheet[]) {
   }
   XLSX.writeFile(wb, filename.endsWith(".xlsx") ? filename : `${filename}.xlsx`);
 }
+
+/** 导出带标题行的 sheet（首行合并居中），数据为二维数组 */
+export function exportXlsxWithTitle(filename: string, opts: {
+  sheetName: string;
+  title: string;
+  headers: string[];
+  rows: unknown[][];
+}) {
+  const wb = XLSX.utils.book_new();
+
+  // 构建 aoa：标题行 + 表头行 + 数据行
+  const aoa: unknown[][] = [
+    [opts.title],
+    opts.headers,
+    ...opts.rows,
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+  // 合并标题行
+  ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: opts.headers.length - 1 } }];
+
+  // 自动列宽
+  ws["!cols"] = opts.headers.map((h, ci) => ({
+    wch: Math.max(
+      h.length * 2,
+      ...opts.rows.slice(0, 200).map((r) => String(r[ci] ?? "").length * 1.9),
+      8,
+    ),
+  }));
+
+  XLSX.utils.book_append_sheet(wb, ws, opts.sheetName.slice(0, 31));
+  XLSX.writeFile(wb, filename.endsWith(".xlsx") ? filename : `${filename}.xlsx`);
+}

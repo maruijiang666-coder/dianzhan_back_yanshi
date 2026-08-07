@@ -3,6 +3,7 @@ import { Toaster } from "@/components/ui/sonner";
 import Layout from "@/components/Layout";
 import Dashboard from "@/pages/Dashboard";
 import Stations from "@/pages/Stations";
+import StationMap from "@/pages/StationMap";
 import Electricity from "@/pages/Electricity";
 import Rent from "@/pages/Rent";
 import Brands from "@/pages/Brands";
@@ -22,6 +23,7 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/stations" element={<Stations />} />
+          <Route path="/station-map" element={<StationMap />} />
           <Route path="/electricity" element={<Electricity />} />
           <Route path="/rent" element={<Rent />} />
           <Route path="/brands" element={<Brands />} />

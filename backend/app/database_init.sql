@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS stations (
     landlord_id INTEGER REFERENCES landlords(id),
     company_share NUMERIC(5,4),
     status VARCHAR(20) DEFAULT '运营中',
+    latitude NUMERIC(10,7),
+    longitude NUMERIC(10,7),
     remark TEXT,
     created_at TIMESTAMP DEFAULT NOW()
 );
@@ -74,26 +76,34 @@ CREATE TABLE IF NOT EXISTS station_shareholder_configs (
     id SERIAL PRIMARY KEY,
     station_id INTEGER NOT NULL REFERENCES stations(id),
     shareholder_id INTEGER NOT NULL REFERENCES shareholders(id),
+    brand_id INTEGER REFERENCES brands(id),
     mode VARCHAR(20) NOT NULL,
     ratio NUMERIC(6,4),
     fixed_amount NUMERIC(12,2),
     settlement_period VARCHAR(10) DEFAULT '月',
-    remark VARCHAR(200),
-    UNIQUE(station_id, shareholder_id)
+    remark VARCHAR(200)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ssh_conf_whole
+    ON station_shareholder_configs (station_id, shareholder_id) WHERE brand_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ssh_conf_brand
+    ON station_shareholder_configs (station_id, brand_id, shareholder_id) WHERE brand_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS station_introducer_configs (
     id SERIAL PRIMARY KEY,
     station_id INTEGER NOT NULL REFERENCES stations(id),
     introducer_id INTEGER NOT NULL REFERENCES introducers(id),
+    brand_id INTEGER REFERENCES brands(id),
     mode VARCHAR(20) NOT NULL,
     ratio NUMERIC(6,4),
     fixed_amount NUMERIC(12,2),
     settlement_period VARCHAR(10) DEFAULT '月',
     count_as_cost BOOLEAN DEFAULT FALSE,
-    remark VARCHAR(200),
-    UNIQUE(station_id, introducer_id)
+    remark VARCHAR(200)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sint_conf_whole
+    ON station_introducer_configs (station_id, introducer_id) WHERE brand_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sint_conf_brand
+    ON station_introducer_configs (station_id, brand_id, introducer_id) WHERE brand_id IS NOT NULL;
 
 -- 财务数据
 CREATE TABLE IF NOT EXISTS electricity_records (
@@ -223,6 +233,7 @@ CREATE TABLE IF NOT EXISTS dividend_shares (
     dividend_id INTEGER NOT NULL REFERENCES dividend_records(id),
     introducer_id INTEGER REFERENCES introducers(id),
     shareholder_id INTEGER REFERENCES shareholders(id),
+    brand_id INTEGER REFERENCES brands(id),
     mode VARCHAR(20) NOT NULL,
     ratio NUMERIC(6,4),
     fixed_amount NUMERIC(12,2),
@@ -310,6 +321,10 @@ CREATE TABLE IF NOT EXISTS meter_monthly (
     address VARCHAR(100) NOT NULL,
     month_period VARCHAR(6) NOT NULL,
     kwh NUMERIC(14,2),
+    prev_reading_date DATE,
+    prev_reading NUMERIC(14,2),
+    curr_reading_date DATE,
+    curr_reading NUMERIC(14,2),
     raw_data JSONB,
     synced_at TIMESTAMP,
     UNIQUE(address, month_period)
